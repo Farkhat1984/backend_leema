@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(python -m pip:*)",
+      "Bash(python -m pytest -v)",
+      "Bash(python:*)",
+      "Bash(chcp:*)",
+      "Bash(pytest:*)",
+      "Bash(findstr:*)",
+      "Bash(alembic revision:*)",
+      "Bash(alembic:*)",
+      "Bash(pip show:*)",
+      "Bash(pip install:*)",
+      "Read(//c/Projects/flutter/**)",
+      "Bash(curl:*)",
+      "Bash(netstat:*)",
+      "Bash(taskkill:*)",
+      "Bash(tasklist)",
+      "Bash(del /F \"C:\\Projects\\backend\\app\\schemas\\__pycache__\\transaction.cpython-313.pyc\")",
+      "Bash(find:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
