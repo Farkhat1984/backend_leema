@@ -69,7 +69,7 @@ docker compose up -d nginx
 # Получите сертификаты (замените email!)
 docker compose run --rm certbot certonly --webroot \
     --webroot-path=/var/www/certbot \
-    --email your-email@example.com \
+    --email zfaragj@gmail.com.com \
     --agree-tos --no-eff-email \
     -d www.leema.kz -d leema.kz
 
