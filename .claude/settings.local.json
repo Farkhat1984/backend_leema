@@ -19,7 +19,8 @@
       "Bash(tasklist)",
       "Bash(del /F \"C:\\Projects\\backend\\app\\schemas\\__pycache__\\transaction.cpython-313.pyc\")",
       "Bash(find:*)",
-      "Bash(.venv/Scripts/pip.exe install:*)"
+      "Bash(.venv/Scripts/pip.exe install:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []
