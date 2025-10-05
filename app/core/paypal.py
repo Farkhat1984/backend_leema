@@ -42,8 +42,8 @@ class PayPalClient:
                     "brand_name": settings.APP_NAME,
                     "landing_page": "BILLING",
                     "user_action": "PAY_NOW",
-                    "return_url": "http://localhost:8000/api/v1/payments/paypal/success",
-                    "cancel_url": "http://localhost:8000/api/v1/payments/paypal/cancel",
+                    "return_url": f"{settings.FRONTEND_URL}/api/v1/payments/paypal/success",
+                    "cancel_url": f"{settings.FRONTEND_URL}/api/v1/payments/paypal/cancel",
                 }
             })
 
