@@ -27,7 +27,8 @@ async def generate_fashion(
             db,
             current_user.id,
             request.prompt,
-            request.user_image_url
+            request.user_image_url,
+            cost=charge_info.get("amount", 0.0)
         )
 
         if not generation:
@@ -69,7 +70,8 @@ async def try_on_product(
             db,
             current_user.id,
             request.product_id,
-            request.user_image_url
+            request.user_image_url,
+            cost=charge_info.get("amount", 0.0)
         )
 
         if not generation:
@@ -111,7 +113,8 @@ async def apply_clothing_to_model(
             db,
             current_user.id,
             request.clothing_image_url,
-            request.person_image_url
+            request.person_image_url,
+            cost=charge_info.get("amount", 0.0)
         )
 
         if not generation:

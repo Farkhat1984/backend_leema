@@ -146,11 +146,13 @@ class ShopService:
     @staticmethod
     async def add_balance(db: AsyncSession, shop_id: int, amount: float) -> bool:
         """Add balance to shop"""
+        from decimal import Decimal
+
         shop = await ShopService.get_by_id(db, shop_id)
         if not shop:
             return False
 
-        shop.balance += amount
+        shop.balance = Decimal(str(float(shop.balance) + amount))
         await db.commit()
         await db.refresh(shop)
         logger.info(f"Added {amount} to shop {shop_id} balance. New balance: {shop.balance}")

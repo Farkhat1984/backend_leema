@@ -9,7 +9,7 @@ from app.services.user_service import user_service
 from app.services.shop_service import shop_service
 from typing import Optional
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
@@ -20,6 +20,12 @@ async def get_current_user(
     Get current authenticated user with enhanced token validation
     Validates: user_id, role, platform, account_type
     """
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
     token = credentials.credentials
     payload = verify_token(token, "access")
 
@@ -76,6 +82,12 @@ async def get_current_shop(
     Get current authenticated shop with enhanced validation
     Prevents user tokens from accessing shop endpoints
     """
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
     token = credentials.credentials
     payload = verify_token(token, "access")
 

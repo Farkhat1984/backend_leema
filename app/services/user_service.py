@@ -87,18 +87,6 @@ class UserService:
         return True
 
     @staticmethod
-    async def deduct_balance(db: AsyncSession, user_id: int, amount: float) -> bool:
-        """Deduct balance from user"""
-        user = await UserService.get_by_id(db, user_id)
-        if not user or float(user.balance) < amount:
-            return False
-
-        user.balance = float(user.balance) - amount
-        await db.commit()
-        logger.info(f"Balance deducted from user {user_id}: -{amount}")
-        return True
-
-    @staticmethod
     async def get_transactions(
         db: AsyncSession, user_id: int, skip: int = 0, limit: int = 50
     ) -> List[Transaction]:

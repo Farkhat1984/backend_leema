@@ -366,15 +366,16 @@ async def get_product_review_stats(
         raise HTTPException(status_code=404, detail="Product not found")
     
     # Get stats
+    from sqlalchemy import case
     stats_result = await db.execute(
         select(
             func.count(Review.id).label('total_reviews'),
             func.avg(Review.rating).label('average_rating'),
-            func.count(func.distinct(func.case((Review.rating == 5, Review.id)))).label('five_star'),
-            func.count(func.distinct(func.case((Review.rating == 4, Review.id)))).label('four_star'),
-            func.count(func.distinct(func.case((Review.rating == 3, Review.id)))).label('three_star'),
-            func.count(func.distinct(func.case((Review.rating == 2, Review.id)))).label('two_star'),
-            func.count(func.distinct(func.case((Review.rating == 1, Review.id)))).label('one_star'),
+            func.sum(case((Review.rating == 5, 1), else_=0)).label('five_star'),
+            func.sum(case((Review.rating == 4, 1), else_=0)).label('four_star'),
+            func.sum(case((Review.rating == 3, 1), else_=0)).label('three_star'),
+            func.sum(case((Review.rating == 2, 1), else_=0)).label('two_star'),
+            func.sum(case((Review.rating == 1, 1), else_=0)).label('one_star'),
         ).where(Review.product_id == product_id)
     )
     stats = stats_result.one()
