@@ -1,0 +1,455 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
+from app.core.google_auth import google_auth
+from app.core.security import create_access_token, create_refresh_token, verify_token
+from app.services.user_service import user_service
+from app.services.shop_service import shop_service
+from app.schemas.auth import (
+    GoogleAuthRequest, GoogleAuthResponse, Token, RefreshTokenRequest,
+    LogoutRequest, AccountType, ClientPlatform
+)
+from app.schemas.user import UserCreate, UserResponse
+from app.schemas.shop import ShopCreate, ShopResponse
+from app.config import settings
+from app.models.user import UserRole
+
+router = APIRouter()
+
+
+@router.post("/google/login", response_model=GoogleAuthResponse)
+async def google_login(
+    request: GoogleAuthRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Authenticate user/shop via Google OAuth
+    account_type: 'user' or 'shop'
+    platform: 'web' or 'mobile'
+    """
+    # Verify Google OAuth code
+    user_info = await google_auth.verify_oauth_code(request.code)
+    if not user_info:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Google authentication code"
+        )
+
+    if request.account_type == AccountType.USER:
+        # Check if user exists
+        user = await user_service.get_by_google_id(db, user_info["google_id"])
+        if not user:
+            # Create new user
+            user_data = UserCreate(
+                google_id=user_info["google_id"],
+                email=user_info["email"],
+                name=user_info["name"],
+                avatar_url=user_info.get("avatar_url")
+            )
+            user = await user_service.create(db, user_data)
+
+        # Create tokens with enhanced claims
+        token_data = {
+            "user_id": user.id,
+            "role": user.role.value,
+            "platform": request.platform.value,
+            "account_type": AccountType.USER.value
+        }
+        access_token = create_access_token(token_data)
+        refresh_token = create_refresh_token(token_data)
+
+        return GoogleAuthResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            user=UserResponse.model_validate(user).model_dump(),
+            account_type=AccountType.USER,
+            platform=request.platform
+        )
+
+    elif request.account_type == AccountType.SHOP:
+        # Check if shop exists
+        shop = await shop_service.get_by_google_id(db, user_info["google_id"])
+        if not shop:
+            # Create new shop
+            shop_data = ShopCreate(
+                google_id=user_info["google_id"],
+                email=user_info["email"],
+                shop_name=user_info["name"],  # Can be updated later
+                owner_name=user_info["name"],
+                avatar_url=user_info.get("avatar_url")
+            )
+            shop = await shop_service.create(db, shop_data)
+
+        # Create tokens with enhanced claims
+        token_data = {
+            "shop_id": shop.id,
+            "role": "shop",  # Shop role
+            "platform": request.platform.value,
+            "account_type": AccountType.SHOP.value
+        }
+        access_token = create_access_token(token_data)
+        refresh_token = create_refresh_token(token_data)
+
+        return GoogleAuthResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            shop=ShopResponse.model_validate(shop).model_dump(),
+            account_type=AccountType.SHOP,
+            platform=request.platform
+        )
+
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid account_type. Must be 'user' or 'shop'"
+        )
+
+
+@router.post("/refresh", response_model=Token)
+async def refresh_access_token(
+    request: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Refresh access token using refresh token"""
+    payload = verify_token(request.refresh_token, "refresh")
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+
+    # Create new access token with same payload
+    new_access_token = create_access_token({
+        k: v for k, v in payload.items() if k not in ["exp", "type"]
+    })
+
+    return Token(
+        access_token=new_access_token,
+        refresh_token=request.refresh_token
+    )
+
+
+@router.post("/logout")
+async def logout(
+    request: LogoutRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Logout user/shop by invalidating refresh token
+    Note: In production, implement token blacklist (Redis recommended)
+    For now, we just verify the token is valid
+    """
+    payload = verify_token(request.refresh_token, "refresh")
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+    
+    # TODO: Add token to blacklist (Redis implementation)
+    # await redis_client.setex(f"blacklist:{request.refresh_token}", settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400, "1")
+    
+    return {"message": "Successfully logged out"}
+
+
+@router.get("/google/url")
+async def get_google_auth_url(
+    account_type: AccountType = AccountType.USER,
+    platform: ClientPlatform = ClientPlatform.WEB
+):
+    """
+    Get Google OAuth authorization URL
+    account_type: 'user' or 'shop'
+    platform: 'web' or 'mobile'
+    """
+    url = google_auth.get_authorization_url(account_type.value, platform.value)
+    return {"authorization_url": url, "account_type": account_type, "platform": platform}
+
+
+@router.post("/test-token")
+async def create_test_token(
+    account_type: str = "user",
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Create test token for development (NO AUTHENTICATION)
+    WARNING: This endpoint should be disabled in production!
+    """
+    # Disable in production
+    if not settings.DEBUG:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Endpoint not available in production"
+        )
+    if account_type == "user":
+        # Get or create test user
+        user = await user_service.get_by_email(db, "test@example.com")
+        if not user:
+            user_data = UserCreate(
+                google_id="test_user",
+                email="test@example.com",
+                name="Test User",
+            )
+            user = await user_service.create(db, user_data)
+
+        access_token = create_access_token({"user_id": user.id, "role": user.role.value})
+        refresh_token = create_refresh_token({"user_id": user.id, "role": user.role.value})
+
+        return GoogleAuthResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            user=UserResponse.model_validate(user).model_dump(),
+            account_type=AccountType.USER,
+            platform=ClientPlatform.MOBILE
+        )
+
+    elif account_type == "shop":
+        # Get or create test shop
+        shop = await shop_service.get_by_email(db, "testshop@example.com")
+        if not shop:
+            shop_data = ShopCreate(
+                google_id="test_shop",
+                email="testshop@example.com",
+                shop_name="Test Shop",
+                owner_name="Test Owner"
+            )
+            shop = await shop_service.create(db, shop_data)
+
+        access_token = create_access_token({"shop_id": shop.id})
+        refresh_token = create_refresh_token({"shop_id": shop.id})
+
+        return GoogleAuthResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            shop=ShopResponse.model_validate(shop).model_dump(),
+            account_type=AccountType.SHOP,
+            platform=ClientPlatform.MOBILE
+        )
+
+    elif account_type == "admin":
+        # Get or create test admin
+        user = await user_service.get_by_email(db, "admin@example.com")
+        if not user:
+            user_data = UserCreate(
+                google_id="test_admin",
+                email="admin@example.com",
+                name="Test Admin",
+            )
+            user = await user_service.create(db, user_data)
+            # Set as admin
+            user.role = UserRole.ADMIN
+            await db.commit()
+            await db.refresh(user)
+
+        access_token = create_access_token({"user_id": user.id, "role": "admin"})
+        refresh_token = create_refresh_token({"user_id": user.id, "role": "admin"})
+
+        return GoogleAuthResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            user=UserResponse.model_validate(user).model_dump(),
+            account_type=AccountType.USER,
+            platform=ClientPlatform.MOBILE
+        )
+
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid account_type. Must be 'user', 'shop', or 'admin'"
+        )
+
+
+@router.get("/google/callback", response_class=HTMLResponse)
+async def google_callback(
+    code: str,
+    state: str = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Google OAuth callback endpoint (GET)
+    This is called by Google after user authorizes
+    Returns HTML page that saves token and redirects
+    """
+    import json as json_lib
+
+    try:
+        # Parse state to get client_type and account_type
+        state_data = {}
+        if state:
+            try:
+                state_data = json_lib.loads(state)
+                print(f"[OAUTH DEBUG] State parsed: {state_data}")
+            except Exception as e:
+                print(f"[OAUTH DEBUG] Failed to parse state: {e}")
+                state_data = {}
+
+        client_type = state_data.get("client_type", "web")
+        requested_account_type = state_data.get("account_type", "shop")
+
+        print(f"[OAUTH DEBUG] client_type: {client_type}, account_type: {requested_account_type}")
+
+        if client_type != "mobile":
+            from urllib.parse import urlencode
+
+            params = {"code": code}
+            if state:
+                params["state"] = state
+            if requested_account_type:
+                params["account_type"] = requested_account_type
+            params["client_type"] = client_type
+
+            redirect_url = f"{settings.FRONTEND_URL}/callback?{urlencode(params)}"
+            print(f"[OAUTH DEBUG] Redirecting web client to frontend callback: {redirect_url}")
+            return RedirectResponse(url=redirect_url, status_code=302)
+
+        # Initialize variables for mobile flow
+        refresh_token = None
+        user_data_json = {}
+
+        # Verify Google OAuth code for mobile
+        user_info = await google_auth.verify_oauth_code(code)
+        if not user_info:
+            return HTMLResponse(content=f"""
+                <html>
+                <body>
+                    <h1>Ошибка авторизации</h1>
+                    <p>Неверный код авторизации Google</p>
+                    <a href="{settings.FRONTEND_URL}">Вернуться на главную</a>
+                </body>
+                </html>
+            """, status_code=401)
+
+        if client_type == "mobile":
+            # Flutter app - always create/login as USER
+            user = await user_service.get_by_google_id(db, user_info["google_id"])
+            if not user:
+                user_data = UserCreate(
+                    google_id=user_info["google_id"],
+                    email=user_info["email"],
+                    name=user_info["name"],
+                    avatar_url=user_info.get("avatar_url")
+                )
+                user = await user_service.create(db, user_data)
+
+            role_str = user.role.value if hasattr(user.role, 'value') else str(user.role)
+            token_payload = {"user_id": user.id, "role": role_str}
+            access_token = create_access_token(token_payload)
+            refresh_token = create_refresh_token(token_payload)
+            account_type = 'user'
+
+            # Prepare user data for Flutter
+            user_data_json = {
+                "id": user.id,
+                "email": user.email,
+                "name": user.name,
+                "avatar_url": user.avatar_url,
+                "role": role_str,
+                "balance": float(user.balance),
+                "free_generations_left": user.free_generations_left,
+                "free_try_ons_left": user.free_try_ons_left,
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unsupported client type"
+            )
+
+        print(f"[OAUTH DEBUG] Final account_type: {account_type}, has access_token: {bool(access_token)}")
+
+        # Return HTML that saves token and redirects
+        return HTMLResponse(content=f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Авторизация...</title>
+                <style>
+                    body {{
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        min-height: 100vh;
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        margin: 0;
+                    }}
+                    .loader {{
+                        text-align: center;
+                        color: white;
+                    }}
+                    .spinner {{
+                        border: 4px solid rgba(255,255,255,0.3);
+                        border-top: 4px solid white;
+                        border-radius: 50%;
+                        width: 50px;
+                        height: 50px;
+                        animation: spin 1s linear infinite;
+                        margin: 0 auto 20px;
+                    }}
+                    @keyframes spin {{
+                        0% {{ transform: rotate(0deg); }}
+                        100% {{ transform: rotate(360deg); }}
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="loader">
+                    <div class="spinner"></div>
+                    <p>Вход выполнен успешно! Перенаправление...</p>
+                </div>
+                <script>
+                    const clientType = {json_lib.dumps(client_type)};
+                    const token = {json_lib.dumps(access_token)};
+                    const refreshToken = {json_lib.dumps(refresh_token)};
+                    const accountType = {json_lib.dumps(account_type)};
+                    const userData = {json_lib.dumps(user_data_json)};
+                    const frontendBaseUrl = {json_lib.dumps(settings.FRONTEND_URL)};
+
+                    console.log('[AUTH] Client type:', clientType);
+                    console.log('[AUTH] Account type:', accountType);
+
+                    if (clientType === 'mobile') {{
+                        // Flutter Web - save to localStorage with special key
+                        localStorage.setItem('flutter_auth_token', token);
+                        localStorage.setItem('flutter_auth_refresh_token', refreshToken);
+                        localStorage.setItem('flutter_auth_account_type', accountType);
+                        localStorage.setItem('flutter_auth_user', JSON.stringify(userData));
+                        localStorage.setItem('flutter_auth_complete', 'true');
+
+                        console.log('[AUTH] Saved Flutter auth data to localStorage');
+
+                        // Get the Flutter app origin from where we came from
+                        const flutterOrigin = document.referrer || frontendBaseUrl;
+                        console.log('[AUTH] Detected Flutter origin:', flutterOrigin);
+
+                        // Show success message
+                        document.querySelector('.loader').innerHTML =
+                            '<h2 style="color: white;">✓ Авторизация успешна!</h2>' +
+                            '<p style="color: white;">Возврат в приложение...</p>';
+
+                        // Redirect back to Flutter app
+                        setTimeout(function() {{
+                            console.log('[AUTH] Redirecting to:', flutterOrigin);
+                            window.location.href = flutterOrigin;
+                        }}, 1500);
+                    }}
+                </script>
+            </body>
+            </html>
+        """)
+
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error in google_callback: {error_details}")
+
+        return HTMLResponse(content=f"""
+            <html>
+            <body style="font-family: monospace; padding: 20px;">
+                <h1>Ошибка авторизации</h1>
+                <p><strong>Сообщение:</strong> {str(e)}</p>
+                <pre style="background: #f5f5f5; padding: 10px; overflow: auto;">{error_details}</pre>
+                <a href="{settings.FRONTEND_URL}">Вернуться на главную</a>
+            </body>
+            </html>
+        """, status_code=500)
