@@ -13,7 +13,8 @@ from app.schemas.auth import (
 from app.schemas.user import UserCreate, UserResponse
 from app.schemas.shop import ShopCreate, ShopResponse
 from app.config import settings
-from app.models.user import UserRole
+from app.models.user import UserRole, User
+from app.api.deps import get_current_user
 
 router = APIRouter()
 
@@ -151,6 +152,48 @@ async def logout(
     # await redis_client.setex(f"blacklist:{request.refresh_token}", settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400, "1")
     
     return {"message": "Successfully logged out"}
+
+
+@router.post("/user/get-or-create-shop", response_model=GoogleAuthResponse)
+async def user_get_or_create_shop(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get or create shop for current user
+    This allows users to also become shop owners
+    """
+    # Check if user already has a shop with same google_id
+    shop = await shop_service.get_by_google_id(db, current_user.google_id)
+    
+    if not shop:
+        # Create new shop for this user
+        shop_data = ShopCreate(
+            google_id=current_user.google_id,
+            email=current_user.email,
+            shop_name=f"{current_user.name}'s Shop",  # Default name, can be updated
+            owner_name=current_user.name,
+            avatar_url=current_user.avatar_url
+        )
+        shop = await shop_service.create(db, shop_data)
+    
+    # Create shop token
+    token_data = {
+        "shop_id": shop.id,
+        "role": "shop",
+        "platform": "web",
+        "account_type": AccountType.SHOP.value
+    }
+    access_token = create_access_token(token_data)
+    refresh_token = create_refresh_token(token_data)
+    
+    return GoogleAuthResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        shop=ShopResponse.model_validate(shop).model_dump(),
+        account_type=AccountType.SHOP,
+        platform=ClientPlatform.WEB
+    )
 
 
 @router.get("/google/url")
