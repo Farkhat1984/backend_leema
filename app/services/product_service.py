@@ -203,8 +203,9 @@ class ProductService:
         )
         db.add(transaction)
 
-        # Approve product
+        # Approve product and activate it
         product.moderation_status = ModerationStatus.APPROVED
+        product.is_active = True  # Automatically activate approved products
         product.moderation_notes = notes
 
         # Update moderation queue
