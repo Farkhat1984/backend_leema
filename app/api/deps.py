@@ -78,8 +78,9 @@ async def get_current_user(
         )
     
     # Validate account_type matches (prevent shop tokens being used as user)
-    # Only enforce if account_type is present in token (for backward compatibility)
-    if payload.get("account_type") and payload.get("account_type") == "shop":
+    # Only enforce strict check if account_type is present AND there's a shop_id (clear shop token)
+    account_type = payload.get("account_type")
+    if account_type == "shop" or (account_type and payload.get("shop_id")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Shop credentials cannot be used for user endpoints"
@@ -132,8 +133,10 @@ async def get_current_shop(
         )
     
     # Validate account_type matches (prevent user tokens being used as shop)
-    # Only enforce if account_type is present in token (for backward compatibility)
-    if payload.get("account_type") and payload.get("account_type") != "shop":
+    # Only enforce strict check if account_type is present AND there's a user_id (clear user token)
+    account_type = payload.get("account_type")
+    if (account_type and account_type != "shop") or (not account_type and payload.get("user_id")):
+        # If no account_type but has user_id, it's likely old user token - reject for shop endpoints
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User credentials cannot be used for shop endpoints"
