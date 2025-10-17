@@ -81,6 +81,10 @@ class ConnectionManager:
     async def send_personal_message(self, message: dict, websocket: WebSocket):
         """Send message to a specific WebSocket connection"""
         try:
+            # Check if websocket is connected and ready
+            if websocket.client_state.name != "CONNECTED":
+                logger.warning(f"WebSocket is not connected (state: {websocket.client_state.name}), skipping message")
+                return
             await websocket.send_json(message)
         except Exception as e:
             logger.error(f"Error sending personal message: {e}")
@@ -99,8 +103,12 @@ class ConnectionManager:
             sent_successfully = 0
             for websocket in self.active_connections[client_type][client_id]:
                 try:
-                    # Check if websocket is still open
-                    logger.info(f"   🔍 WebSocket state: {websocket.client_state}")
+                    # Check if websocket is still connected
+                    if websocket.client_state.name != "CONNECTED":
+                        logger.warning(f"   ⚠️ WebSocket not connected (state: {websocket.client_state.name}), marking for removal")
+                        disconnected.append(websocket)
+                        continue
+                    
                     await websocket.send_json(message)
                     sent_successfully += 1
                     logger.info(f"   ✅ Message sent successfully to {client_type}:{client_id}")
@@ -134,6 +142,12 @@ class ConnectionManager:
             logger.info(f"   Broadcasting to {client_type}:{client_id} ({len(websockets)} connection(s))")
             for websocket in websockets:
                 try:
+                    # Check if websocket is still connected
+                    if websocket.client_state.name != "CONNECTED":
+                        logger.warning(f"   ⚠️ WebSocket not connected (state: {websocket.client_state.name}), marking for removal")
+                        disconnected.append((websocket, client_type, client_id))
+                        continue
+                    
                     await websocket.send_json(message)
                     sent_count += 1
                     logger.info(f"   ✅ Message sent to {client_type}:{client_id}")
@@ -175,6 +189,11 @@ class ConnectionManager:
         disconnected = []
         for websocket in self.rooms[room_name]:
             try:
+                # Check if websocket is still connected
+                if websocket.client_state.name != "CONNECTED":
+                    disconnected.append(websocket)
+                    continue
+                    
                 await websocket.send_json(message)
             except Exception as e:
                 logger.error(f"Error broadcasting to room {room_name}: {e}")
