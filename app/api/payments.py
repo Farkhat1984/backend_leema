@@ -258,10 +258,13 @@ async def capture_payment(
                 transaction_id=transaction.id,
                 reason=transaction.type.value
             )
+            logger.info(f"[PAYMENT] Sending balance update event for shop {transaction.shop_id}: {old_shop_balance} -> {shop.balance}")
+            
             # Send to shop
             await connection_manager.send_to_client(balance_event.model_dump(mode="json"), "shop", transaction.shop_id)
             
             # Send to all admins so they can monitor shop balances
+            logger.info(f"[PAYMENT] Broadcasting balance update to all admins")
             await connection_manager.broadcast_to_type(balance_event.model_dump(mode="json"), "admin")
 
     # Send transaction completed event
