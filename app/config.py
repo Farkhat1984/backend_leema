@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "https://www.leema.kz/public/auth/callback.html"
+    
+    # Firebase (for mobile apps)
+    FIREBASE_WEB_API: str = ""  # Firebase Web API Key for mobile authentication
+    GOOGLE_MOBILE_CLIENT_ID: str = ""  # Web client ID for mobile apps (from Firebase)
+    GOOGLE_MOBILE_CLIENT_SECRET: str = ""  # Web client secret (optional, for mobile OAuth flow)
+    GOOGLE_ANDROID_CLIENT_ID: str = ""  # Android client ID for mobile apps
 
     # Google Gemini AI
     GEMINI_API_KEY: str = ""

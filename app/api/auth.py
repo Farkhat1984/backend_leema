@@ -26,15 +26,51 @@ async def google_login(
 ):
     """
     Authenticate user/shop via Google OAuth
+    Supports two authentication methods:
+    1. Web OAuth flow: Send 'code' (authorization code)
+    2. Mobile flow: Send 'id_token' (Google ID token)
+    
     account_type: 'user' or 'shop'
     platform: 'web' or 'mobile'
     """
-    # Verify Google OAuth code
-    user_info = await google_auth.verify_oauth_code(request.code)
+    # Debug logging
+    print(f"[AUTH DEBUG] Request received:")
+    print(f"  - platform: {request.platform}")
+    print(f"  - account_type: {request.account_type}")
+    print(f"  - has code: {bool(request.code)}")
+    print(f"  - has id_token: {bool(request.id_token)}")
+    if request.id_token:
+        print(f"  - id_token preview: {request.id_token[:50]}...")
+    if request.code:
+        print(f"  - code preview: {request.code[:50]}...")
+    
+    # Validate request - must have either code or id_token
+    if not request.code and not request.id_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either 'code' or 'id_token' must be provided"
+        )
+    
+    if request.code and request.id_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide either 'code' or 'id_token', not both"
+        )
+    
+    # Get user info from Google
+    user_info = None
+    
+    if request.code:
+        # Web flow: Exchange authorization code for tokens
+        user_info = await google_auth.verify_oauth_code(request.code)
+    elif request.id_token:
+        # Mobile flow: Verify ID token directly
+        user_info = google_auth.verify_id_token(request.id_token)
+    
     if not user_info:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Google authentication code"
+            detail="Invalid Google authentication credentials"
         )
 
     if request.account_type == AccountType.USER:

@@ -13,6 +13,9 @@ class GoogleAuth:
         self.client_id = settings.GOOGLE_CLIENT_ID
         self.client_secret = settings.GOOGLE_CLIENT_SECRET
         self.redirect_uri = settings.GOOGLE_REDIRECT_URI
+        # Mobile client IDs for token verification
+        self.mobile_client_id = settings.GOOGLE_MOBILE_CLIENT_ID
+        self.android_client_id = settings.GOOGLE_ANDROID_CLIENT_ID
 
     def get_authorization_url(self, account_type: str = "shop", client_type: str = "web") -> str:
         """
@@ -105,7 +108,30 @@ class GoogleAuth:
     def verify_id_token(self, token: str) -> Optional[Dict]:
         """Verify Google ID token (for mobile apps)"""
         try:
-            idinfo = id_token.verify_oauth2_token(token, requests.Request(), self.client_id)
+            # Try to verify with multiple client IDs (web, android)
+            client_ids = [
+                self.mobile_client_id,  # Web client ID from Firebase
+                self.android_client_id,  # Android client ID
+                self.client_id  # Fallback to main web client ID
+            ]
+            
+            idinfo = None
+            last_error = None
+            
+            for client_id in client_ids:
+                if not client_id:
+                    continue
+                try:
+                    idinfo = id_token.verify_oauth2_token(token, requests.Request(), client_id)
+                    break  # Successfully verified
+                except Exception as e:
+                    last_error = e
+                    continue
+            
+            if not idinfo:
+                print(f"Token verification failed with all client IDs. Last error: {last_error}")
+                return None
+                
             return {
                 "google_id": idinfo.get("sub"),
                 "email": idinfo.get("email"),
