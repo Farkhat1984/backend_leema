@@ -13,6 +13,7 @@ from app.models.transaction import Transaction, TransactionStatus
 from app.models.generation import Generation
 from app.models.moderation import ModerationQueue
 from app.models.refund import Refund, RefundStatus
+from app.models.order import Order, OrderItem, OrderStatus
 from app.models.settings import PlatformSettings
 from app.services.product_service import product_service
 from app.services.settings_service import settings_service
@@ -28,6 +29,7 @@ from app.schemas.admin import (
     BulkShopAction
 )
 from app.schemas.product import ProductResponse
+from app.schemas.order import OrderResponse, OrderItemResponse
 from app.schemas.webhook import (
     create_product_moderation_event,
     create_settings_update_event,
@@ -376,6 +378,225 @@ async def reject_product(
         logger = logging.getLogger(__name__)
         logger.error(f"Error rejecting product {product_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error rejecting product: {str(e)}")
+
+
+@router.get("/orders")
+async def get_all_orders(
+    skip: int = 0,
+    limit: int = 50,
+    status: str = None,
+    user_id: int = None,
+    shop_id: int = None,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all orders in system (Web admin panel)"""
+    from app.models.order import Order, OrderStatus, OrderItem
+    from app.schemas.order import OrderResponse, OrderItemResponse
+    
+    query = select(Order)
+    
+    # Filters
+    if status:
+        try:
+            status_enum = OrderStatus(status)
+            query = query.where(Order.status == status_enum)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status. Must be one of: {[s.value for s in OrderStatus]}"
+            )
+    
+    if user_id:
+        query = query.where(Order.user_id == user_id)
+    
+    if shop_id:
+        # Orders containing items from this shop
+        query = query.join(OrderItem).where(OrderItem.shop_id == shop_id)
+    
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+    
+    # Get paginated results
+    query = query.order_by(Order.created_at.desc()).offset(skip).limit(limit)
+    result = await db.execute(query)
+    orders = result.scalars().all()
+    
+    # Build response
+    orders_response = []
+    for order in orders:
+        # Load items
+        items_result = await db.execute(
+            select(OrderItem).where(OrderItem.order_id == order.id)
+        )
+        order.items = list(items_result.scalars().all())
+        
+        response = OrderResponse.model_validate(order)
+        
+        # Load item details
+        items_response = []
+        for item in order.items:
+            product_result = await db.execute(
+                select(Product).where(Product.id == item.product_id)
+            )
+            product = product_result.scalar_one_or_none()
+            
+            shop_result = await db.execute(
+                select(Shop).where(Shop.id == item.shop_id)
+            )
+            shop = shop_result.scalar_one_or_none()
+            
+            item_response = OrderItemResponse.model_validate(item)
+            if product:
+                item_response.product_name = product.name
+            if shop:
+                item_response.shop_name = shop.shop_name
+            
+            items_response.append(item_response)
+        
+        response.items = items_response
+        orders_response.append(response)
+    
+    return {
+        "orders": orders_response,
+        "total": total,
+        "page": skip // limit + 1 if limit > 0 else 1,
+        "page_size": limit
+    }
+
+
+@router.get("/orders/{order_id}")
+async def get_order_details(
+    order_id: int,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get order details (Web admin panel)"""
+    from app.models.order import Order, OrderItem
+    from app.schemas.order import OrderResponse, OrderItemResponse
+    
+    order_result = await db.execute(
+        select(Order).where(Order.id == order_id)
+    )
+    order = order_result.scalar_one_or_none()
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Load items
+    items_result = await db.execute(
+        select(OrderItem).where(OrderItem.order_id == order.id)
+    )
+    order.items = list(items_result.scalars().all())
+    
+    # Build response with details
+    response = OrderResponse.model_validate(order)
+    
+    items_response = []
+    for item in order.items:
+        product_result = await db.execute(
+            select(Product).where(Product.id == item.product_id)
+        )
+        product = product_result.scalar_one_or_none()
+        
+        shop_result = await db.execute(
+            select(Shop).where(Shop.id == item.shop_id)
+        )
+        shop = shop_result.scalar_one_or_none()
+        
+        item_response = OrderItemResponse.model_validate(item)
+        if product:
+            item_response.product_name = product.name
+        if shop:
+            item_response.shop_name = shop.shop_name
+        
+        items_response.append(item_response)
+    
+    response.items = items_response
+    
+    # Add user info
+    user_result = await db.execute(
+        select(User).where(User.id == order.user_id)
+    )
+    user = user_result.scalar_one_or_none()
+    
+    return {
+        "order": response,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name
+        } if user else None
+    }
+
+
+@router.post("/orders/{order_id}/refund")
+async def force_refund_order(
+    order_id: int,
+    reason: str,
+    refund_amount: float = None,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Force refund order (Web admin panel)"""
+    from app.models.order import Order, OrderStatus
+    
+    order_result = await db.execute(
+        select(Order).where(Order.id == order_id)
+    )
+    order = order_result.scalar_one_or_none()
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if order.status == OrderStatus.REFUNDED:
+        raise HTTPException(status_code=400, detail="Order already refunded")
+    
+    # Use order total if amount not specified
+    amount = refund_amount if refund_amount else float(order.total_amount)
+    
+    # Refund to user balance
+    user_result = await db.execute(
+        select(User).where(User.id == order.user_id)
+    )
+    user = user_result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user.balance = float(user.balance) + amount
+    
+    # Create refund transaction
+    refund_transaction = Transaction(
+        user_id=user.id,
+        type=TransactionStatus.REFUND,
+        amount=amount,
+        status=TransactionStatus.COMPLETED,
+        extra_data={
+            "order_id": order.id,
+            "order_number": order.order_number,
+            "reason": f"Admin refund: {reason}",
+            "admin_id": admin.id,
+            "forced": True
+        }
+    )
+    db.add(refund_transaction)
+    
+    # Update order status
+    order.status = OrderStatus.REFUNDED
+    
+    await db.commit()
+    
+    logger.info(f"Admin {admin.id} forced refund for order {order.order_number}: ${amount:.2f}")
+    
+    return {
+        "message": "Order refunded successfully",
+        "order_id": order.id,
+        "order_number": order.order_number,
+        "refunded_amount": amount
+    }
 
 
 @router.get("/refunds", response_model=List[RefundResponse])
