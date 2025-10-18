@@ -17,7 +17,8 @@ class PaymentService:
     async def create_top_up_payment(
         db: AsyncSession,
         user_id: int,
-        amount: float
+        amount: float,
+        platform: str = "web"
     ) -> Optional[Dict]:
         """Create PayPal payment for user balance top-up"""
         user = await user_service.get_by_id(db, user_id)
@@ -27,7 +28,8 @@ class PaymentService:
         # Create PayPal order
         order = await paypal_client.create_order(
             amount=amount,
-            description=f"Balance top-up for {user.email}"
+            description=f"Balance top-up for {user.email}",
+            platform=platform
         )
         if not order:
             return None
@@ -57,7 +59,8 @@ class PaymentService:
     async def create_shop_top_up_payment(
         db: AsyncSession,
         shop_id: int,
-        amount: float
+        amount: float,
+        platform: str = "web"
     ) -> Optional[Dict]:
         """Create PayPal payment for shop balance top-up"""
         from app.services.shop_service import shop_service
@@ -69,7 +72,8 @@ class PaymentService:
         # Create PayPal order
         order = await paypal_client.create_order(
             amount=amount,
-            description=f"Balance top-up for shop {shop.shop_name}"
+            description=f"Balance top-up for shop {shop.shop_name}",
+            platform=platform
         )
         if not order:
             return None
@@ -100,7 +104,8 @@ class PaymentService:
         db: AsyncSession,
         shop_id: int,
         product_id: int,
-        months: int
+        months: int,
+        platform: str = "web"
     ) -> Optional[Dict]:
         """Create PayPal payment for product rent"""
         from app.services.shop_service import shop_service
@@ -129,7 +134,8 @@ class PaymentService:
         # Create PayPal order
         order = await paypal_client.create_order(
             amount=total_amount,
-            description=f"Product rent for {months} months - {product.name}"
+            description=f"Product rent for {months} months - {product.name}",
+            platform=platform
         )
         if not order:
             return None
@@ -212,7 +218,8 @@ class PaymentService:
     async def process_product_purchase(
         db: AsyncSession,
         user_id: int,
-        product_id: int
+        product_id: int,
+        platform: str = "web"
     ) -> Optional[Dict]:
         """Process product purchase (creates PayPal payment)"""
         user = await user_service.get_by_id(db, user_id)
@@ -226,7 +233,8 @@ class PaymentService:
         # Create PayPal order
         order = await paypal_client.create_order(
             amount=amount,
-            description=f"Purchase: {product.name}"
+            description=f"Purchase: {product.name}",
+            platform=platform
         )
         if not order:
             return None

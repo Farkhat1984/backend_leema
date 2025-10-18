@@ -40,17 +40,24 @@ async def create_top_up_payment(
     if payment_data.payment_type != "top_up":
         raise HTTPException(status_code=400, detail="Invalid payment type")
     
-    # Security: Prevent admins from topping up user balance (should use admin panel)
-    if current_user.role == UserRole.ADMIN:
+    # Security: Check token platform context, not DB role
+    # Admins can top up their own balance in mobile/user context
+    # But prevent topping up from admin web panel (admin should use admin panel tools)
+    token_platform = getattr(current_user, 'token_platform', None)
+    if current_user.role == UserRole.ADMIN and token_platform == ClientPlatform.WEB.value:
         raise HTTPException(
             status_code=403,
-            detail="Admins should use admin panel for balance modifications"
+            detail="Admins should use admin panel for balance modifications on web platform"
         )
+    
+    # Determine platform for PayPal redirect URLs
+    platform = "mobile" if x_client_platform == "mobile" else "web"
     
     # Audit log
     logger.info(
         f"[PAYMENT] User top-up initiated: user_id={current_user.id}, "
-        f"amount={payment_data.amount}, platform={x_client_platform}"
+        f"role={current_user.role.value}, token_platform={token_platform}, "
+        f"amount={payment_data.amount}, platform={platform}"
     )
     
     # Validate amount (reasonable limits)
@@ -61,7 +68,7 @@ async def create_top_up_payment(
         )
 
     payment = await payment_service.create_top_up_payment(
-        db, current_user.id, payment_data.amount
+        db, current_user.id, payment_data.amount, platform=platform
     )
     if not payment:
         raise HTTPException(status_code=400, detail="Failed to create payment")
@@ -88,10 +95,13 @@ async def create_shop_top_up_payment(
     if payment_data.payment_type != "top_up":
         raise HTTPException(status_code=400, detail="Invalid payment type")
     
+    # Determine platform for PayPal redirect URLs
+    platform = "mobile" if x_client_platform == "mobile" else "web"
+    
     # Audit log
     logger.info(
         f"[PAYMENT] Shop top-up initiated: shop_id={current_shop.id}, "
-        f"amount={payment_data.amount}, platform={x_client_platform}"
+        f"amount={payment_data.amount}, platform={platform}"
     )
     
     # Validate amount
@@ -102,7 +112,7 @@ async def create_shop_top_up_payment(
         )
 
     payment = await payment_service.create_shop_top_up_payment(
-        db, current_shop.id, payment_data.amount
+        db, current_shop.id, payment_data.amount, platform=platform
     )
     if not payment:
         raise HTTPException(status_code=400, detail="Failed to create payment")
@@ -161,14 +171,17 @@ async def create_rent_payment(
             detail="Rental period must be between 1 and 12 months"
         )
     
+    # Determine platform for PayPal redirect URLs
+    platform = "mobile" if x_client_platform == "mobile" else "web"
+    
     # Audit log
     logger.info(
         f"[PAYMENT] Product rent initiated: shop_id={current_shop.id}, "
-        f"product_id={product_id}, months={months}, platform={x_client_platform}"
+        f"product_id={product_id}, months={months}, platform={platform}"
     )
 
     payment = await payment_service.create_rent_payment(
-        db, current_shop.id, product_id, months
+        db, current_shop.id, product_id, months, platform=platform
     )
     if not payment:
         raise HTTPException(status_code=400, detail="Failed to create payment")
@@ -294,18 +307,92 @@ async def capture_payment(
     }
 
 
-@router.get("/paypal/success", response_class=HTMLResponse)
+@router.get("/paypal/success")
 async def paypal_success(
     token: str,
     PayerID: str = None,
+    platform: str = "web",
     db: AsyncSession = Depends(get_db)
 ):
-    """PayPal payment success callback"""
+    """PayPal payment success callback - supports both web and mobile"""
+    from fastapi.responses import RedirectResponse, JSONResponse
+    
     try:
         # Capture the payment
         transaction = await payment_service.capture_payment(db, token)
         
         if not transaction:
+            if platform == "mobile":
+                # For mobile: redirect to deep link with error
+                return RedirectResponse(url=f"myapp://payment/error?message=payment_failed")
+            else:
+                # For web: return HTML error page
+                return HTMLResponse(content=f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Ошибка платежа</title>
+                        <style>
+                            body {{ font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; }}
+                            .container {{ background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; max-width: 500px; }}
+                            h1 {{ color: #e74c3c; margin-bottom: 20px; }}
+                            .btn {{ display: inline-block; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }}
+                        </style>
+                    </head>
+                    <body>
+                        <div class="container">
+                            <h1>❌ Ошибка обработки платежа</h1>
+                            <p>Не удалось завершить платеж. Пожалуйста, попробуйте снова.</p>
+                            <a href="{settings.FRONTEND_URL}/topup.html" class="btn">Вернуться к пополнению</a>
+                        </div>
+                    </body>
+                    </html>
+                """, status_code=400)
+        
+        # Payment captured successfully
+        if platform == "mobile":
+            # For mobile: redirect to deep link with success
+            return RedirectResponse(url=f"myapp://payment/success?amount={transaction.amount}&transaction_id={transaction.id}")
+        else:
+            # For web: return HTML success page
+            return HTMLResponse(content=f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Платёж успешен</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }}
+                        .container {{ background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; max-width: 500px; }}
+                        h1 {{ color: #10b981; margin-bottom: 20px; }}
+                        .amount {{ font-size: 36px; font-weight: bold; color: #667eea; margin: 20px 0; }}
+                        .btn {{ display: inline-block; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }}
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>✅ Платёж успешно выполнен!</h1>
+                        <p>Ваш баланс пополнен на:</p>
+                        <div class="amount">${transaction.amount:.2f}</div>
+                        <p>Спасибо за использование нашей платформы!</p>
+                        <a href="{settings.FRONTEND_URL}/shop.html" class="btn">Вернуться в панель</a>
+                    </div>
+                    <script>
+                        // Auto redirect after 3 seconds
+                        setTimeout(() => {{
+                            window.location.href = '{settings.FRONTEND_URL}/shop.html';
+                        }}, 3000);
+                    </script>
+                </body>
+                </html>
+            """)
+    except Exception as e:
+        logger.error(f"PayPal success callback error: {e}")
+        
+        if platform == "mobile":
+            # For mobile: redirect to deep link with error
+            return RedirectResponse(url=f"myapp://payment/error?message={str(e)}")
+        else:
+            # For web: return HTML error page
             return HTMLResponse(content=f"""
                 <!DOCTYPE html>
                 <html>
@@ -321,100 +408,53 @@ async def paypal_success(
                 <body>
                     <div class="container">
                         <h1>❌ Ошибка обработки платежа</h1>
-                        <p>Не удалось завершить платеж. Пожалуйста, попробуйте снова.</p>
+                        <p>{str(e)}</p>
                         <a href="{settings.FRONTEND_URL}/topup.html" class="btn">Вернуться к пополнению</a>
                     </div>
                 </body>
                 </html>
-            """, status_code=400)
-        
-        # Success page
+            """, status_code=500)
+
+
+@router.get("/paypal/cancel")
+async def paypal_cancel(platform: str = "web"):
+    """PayPal payment cancel callback - supports both web and mobile"""
+    from fastapi.responses import RedirectResponse
+    
+    if platform == "mobile":
+        # For mobile: redirect to deep link with cancel
+        return RedirectResponse(url="myapp://payment/cancel")
+    else:
+        # For web: return HTML cancel page
         return HTMLResponse(content=f"""
             <!DOCTYPE html>
             <html>
             <head>
-                <title>Платёж успешен</title>
+                <title>Платёж отменён</title>
                 <style>
-                    body {{ font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }}
+                    body {{ font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; }}
                     .container {{ background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; max-width: 500px; }}
-                    h1 {{ color: #10b981; margin-bottom: 20px; }}
-                    .amount {{ font-size: 36px; font-weight: bold; color: #667eea; margin: 20px 0; }}
+                    h1 {{ color: #f59e0b; margin-bottom: 20px; }}
                     .btn {{ display: inline-block; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }}
                 </style>
             </head>
             <body>
                 <div class="container">
-                    <h1>✅ Платёж успешно выполнен!</h1>
-                    <p>Ваш баланс пополнен на:</p>
-                    <div class="amount">${transaction.amount:.2f}</div>
-                    <p>Спасибо за использование нашей платформы!</p>
-                    <a href="{settings.FRONTEND_URL}/shop.html" class="btn">Вернуться в панель</a>
+                    <h1>⚠️ Платёж отменён</h1>
+                    <p>Вы отменили платёж. Средства не были списаны с вашего счёта.</p>
+                    <a href="{settings.FRONTEND_URL}/topup.html" class="btn">Попробовать снова</a>
+                    <br><br>
+                    <a href="{settings.FRONTEND_URL}/shop.html" style="color: #667eea; text-decoration: none;">Вернуться в панель</a>
                 </div>
                 <script>
-                    // Auto redirect after 3 seconds
+                    // Auto redirect after 5 seconds
                     setTimeout(() => {{
-                        window.location.href = '{settings.FRONTEND_URL}/shop.html';
-                    }}, 3000);
+                        window.location.href = '{settings.FRONTEND_URL}/topup.html';
+                    }}, 5000);
                 </script>
             </body>
             </html>
         """)
-    except Exception as e:
-        return HTMLResponse(content=f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Ошибка платежа</title>
-                <style>
-                    body {{ font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; }}
-                    .container {{ background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; max-width: 500px; }}
-                    h1 {{ color: #e74c3c; margin-bottom: 20px; }}
-                    .btn {{ display: inline-block; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <h1>❌ Ошибка обработки платежа</h1>
-                    <p>{str(e)}</p>
-                    <a href="{settings.FRONTEND_URL}/topup.html" class="btn">Вернуться к пополнению</a>
-                </div>
-            </body>
-            </html>
-        """, status_code=500)
-
-
-@router.get("/paypal/cancel", response_class=HTMLResponse)
-async def paypal_cancel():
-    """PayPal payment cancel callback"""
-    return HTMLResponse(content=f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Платёж отменён</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; }}
-                .container {{ background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; max-width: 500px; }}
-                h1 {{ color: #f59e0b; margin-bottom: 20px; }}
-                .btn {{ display: inline-block; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>⚠️ Платёж отменён</h1>
-                <p>Вы отменили платёж. Средства не были списаны с вашего счёта.</p>
-                <a href="{settings.FRONTEND_URL}/topup.html" class="btn">Попробовать снова</a>
-                <br><br>
-                <a href="{settings.FRONTEND_URL}/shop.html" style="color: #667eea; text-decoration: none;">Вернуться в панель</a>
-            </div>
-            <script>
-                // Auto redirect after 5 seconds
-                setTimeout(() => {{
-                    window.location.href = '{settings.FRONTEND_URL}/topup.html';
-                }}, 5000);
-            </script>
-        </body>
-        </html>
-    """)
 
 
 @router.post("/paypal/webhook")

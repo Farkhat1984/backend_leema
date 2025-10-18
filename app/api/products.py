@@ -259,11 +259,15 @@ async def create_product(
     # Log and send to admins
     import logging
     logger = logging.getLogger(__name__)
-    logger.info(f"🔔 Sending moderation queue event to admins: {queue_event.model_dump(mode="json")}")
-    await connection_manager.broadcast_to_type(queue_event.model_dump(mode="json"), "admin")
+    queue_event_dict = queue_event.model_dump(mode='json')
+    logger.info(f"🔔 Sending moderation queue event to admins: {queue_event_dict}")
+    await connection_manager.broadcast_to_type(queue_event_dict, "admin")
     logger.info(f"✅ Moderation queue event sent to admins")
 
-    # Send webhook to shop
+    # Prepare full product data for WebSocket event
+    product_dict = ProductResponse.model_validate(product).model_dump(mode='json')
+    
+    # Send webhook to ALL shops (mobile apps need to see all products)
     product_event = create_product_event(
         event_type=WebhookEventType.PRODUCT_CREATED,
         product_id=product.id,
@@ -271,12 +275,14 @@ async def create_product(
         shop_id=current_shop.id,
         action="created",
         moderation_status=product.moderation_status.value,
-        is_active=product.is_active
+        is_active=product.is_active,
+        product=product_dict
     )
     
-    logger.info(f"🔔 Sending product.created event to shop {current_shop.id}: {product_event.model_dump(mode="json")}")
-    await connection_manager.send_to_client(product_event.model_dump(mode="json"), "shop", current_shop.id)
-    logger.info(f"✅ Product.created event sent to shop {current_shop.id}")
+    product_event_dict = product_event.model_dump(mode='json')
+    logger.info(f"🔔 Broadcasting product.created event to ALL shops")
+    await connection_manager.broadcast_to_type(product_event_dict, "shop")
+    logger.info(f"✅ Product.created event broadcast to all shops")
 
     return ProductResponse.model_validate(product)
 
@@ -324,7 +330,10 @@ async def update_product(
     await db.commit()
     await db.refresh(updated_product)
 
-    # Send webhook to shop
+    # Prepare full product data for WebSocket event
+    product_dict = ProductResponse.model_validate(updated_product).model_dump(mode='json')
+    
+    # Send webhook to ALL shops (mobile apps need to see all products)
     product_event = create_product_event(
         event_type=WebhookEventType.PRODUCT_UPDATED,
         product_id=updated_product.id,
@@ -332,9 +341,14 @@ async def update_product(
         shop_id=current_shop.id,
         action="updated_pending_moderation",
         moderation_status=updated_product.moderation_status.value,
-        is_active=updated_product.is_active
+        is_active=updated_product.is_active,
+        product=product_dict
     )
-    await connection_manager.send_to_client(product_event.model_dump(mode="json"), "shop", current_shop.id)
+    
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"🔔 Broadcasting product.updated event to ALL shops")
+    await connection_manager.broadcast_to_type(product_event.model_dump(mode='json'), "shop")
     
     # Notify admins about updated product in moderation queue
     pending_count_result = await db.execute(
@@ -348,10 +362,8 @@ async def update_product(
         product_id=product_id
     )
     
-    import logging
-    logger = logging.getLogger(__name__)
     logger.info(f"🔔 Product {product_id} updated and sent back to moderation. Notifying admins.")
-    await connection_manager.broadcast_to_type(queue_event.model_dump(mode="json"), "admin")
+    await connection_manager.broadcast_to_type(queue_event.model_dump(mode='json'), "admin")
 
     return ProductResponse.model_validate(updated_product)
 
@@ -371,7 +383,7 @@ async def delete_product(
     was_pending = product.moderation_status.value == "pending"
     await product_service.delete(db, product_id)
 
-    # Send webhook to shop
+    # Send webhook to ALL shops (mobile apps need to know about deletions)
     product_event = create_product_event(
         event_type=WebhookEventType.PRODUCT_DELETED,
         product_id=product_id,
@@ -379,13 +391,12 @@ async def delete_product(
         shop_id=current_shop.id,
         action="deleted"
     )
-    await connection_manager.send_to_client(product_event.model_dump(mode="json"), "shop", current_shop.id)
     
-    # Always notify admins about product deletion for synchronization
     import logging
     logger = logging.getLogger(__name__)
-    logger.info(f"🔔 Product {product_id} deleted by shop. Notifying admins for sync.")
-    await connection_manager.broadcast_to_type(product_event.model_dump(mode="json"), "admin")
+    logger.info(f"🔔 Broadcasting product.deleted event to ALL shops and admins")
+    await connection_manager.broadcast_to_type(product_event.model_dump(mode='json'), "shop")
+    await connection_manager.broadcast_to_type(product_event.model_dump(mode='json'), "admin")
     
     # If product was pending moderation, update queue count
     if was_pending:
@@ -399,7 +410,7 @@ async def delete_product(
             action="removed",
             product_id=product_id
         )
-        await connection_manager.broadcast_to_type(queue_event.model_dump(mode="json"), "admin")
+        await connection_manager.broadcast_to_type(queue_event.model_dump(mode='json'), "admin")
 
 
     return {"message": "Product deleted successfully"}
@@ -473,7 +484,7 @@ async def create_review(
         rating=review.rating,
         comment=review.comment
     )
-    await connection_manager.send_to_client(review_event.model_dump(mode="json"), "shop", product.shop_id)
+    await connection_manager.send_to_client(review_event.model_dump(mode='json'), "shop", product.shop_id)
 
     # Return with user info
     response = ReviewResponse.model_validate(new_review)

@@ -192,7 +192,7 @@ async def update_setting(
             old_value=old_value,
             description=setting.description
         )
-        await connection_manager.broadcast_to_all(event.model_dump(mode="json"))
+        await connection_manager.broadcast_to_all(event.model_dump(mode='json'))
     except Exception as e:
         # Log error but don't fail the request
         logger.warning(f"Failed to broadcast settings update: {e}")
@@ -235,10 +235,14 @@ async def approve_product(
         # Get shop info
         from app.services.shop_service import shop_service
         from app.services.settings_service import settings_service
+        from app.schemas.product import ProductResponse
         shop = await shop_service.get_by_id(db, product.shop_id)
         approval_fee = await settings_service.get_setting_float(db, "shop_approval_fee", 5.0)
 
-        # Send webhook to shop
+        # Prepare full product data for WebSocket event
+        product_dict = ProductResponse.model_validate(product).model_dump(mode='json')
+
+        # Send webhook to ALL shops (mobile apps need to see approved products)
         event = create_product_moderation_event(
             event_type=WebhookEventType.PRODUCT_APPROVED,
             product_id=product.id,
@@ -248,12 +252,18 @@ async def approve_product(
             admin_id=admin.id,
             shop_name=shop.shop_name if shop else None,
             moderation_notes=action.notes,
-            approval_fee=approval_fee
+            approval_fee=approval_fee,
+            product=product_dict
         )
-        await connection_manager.send_to_client(event.model_dump(mode="json"), "shop", product.shop_id)
+        
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"🔔 Broadcasting product.approved event to ALL shops")
+        await connection_manager.broadcast_to_type(event.model_dump(mode='json'), "shop")
 
         # Broadcast to all users (mobile app users)
-        await connection_manager.broadcast_to_type(event.model_dump(mode="json"), "user")
+        logger.info(f"🔔 Broadcasting product.approved event to ALL users")
+        await connection_manager.broadcast_to_type(event.model_dump(mode='json'), "user")
 
         # Update moderation queue for admins
         pending_count_result = await db.execute(
@@ -265,7 +275,7 @@ async def approve_product(
             action="processed",
             product_id=product_id
         )
-        await connection_manager.broadcast_to_type(queue_event.model_dump(mode="json"), "admin")
+        await connection_manager.broadcast_to_type(queue_event.model_dump(mode='json'), "admin")
 
         # Send email to shop (non-critical, don't fail if email fails)
         try:
@@ -310,9 +320,13 @@ async def reject_product(
 
         # Get shop info
         from app.services.shop_service import shop_service
+        from app.schemas.product import ProductResponse
         shop = await shop_service.get_by_id(db, product.shop_id)
 
-        # Send webhook to shop
+        # Prepare full product data for WebSocket event
+        product_dict = ProductResponse.model_validate(product).model_dump(mode='json')
+
+        # Send webhook to ALL shops (mobile apps need to know about rejections)
         event = create_product_moderation_event(
             event_type=WebhookEventType.PRODUCT_REJECTED,
             product_id=product.id,
@@ -321,9 +335,14 @@ async def reject_product(
             moderation_status="rejected",
             admin_id=admin.id,
             shop_name=shop.shop_name if shop else None,
-            moderation_notes=action.notes
+            moderation_notes=action.notes,
+            product=product_dict
         )
-        await connection_manager.send_to_client(event.model_dump(mode="json"), "shop", product.shop_id)
+        
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"🔔 Broadcasting product.rejected event to ALL shops")
+        await connection_manager.broadcast_to_type(event.model_dump(mode='json'), "shop")
 
         # Update moderation queue for admins
         pending_count_result = await db.execute(
@@ -335,7 +354,7 @@ async def reject_product(
             action="processed",
             product_id=product_id
         )
-        await connection_manager.broadcast_to_type(queue_event.model_dump(mode="json"), "admin")
+        await connection_manager.broadcast_to_type(queue_event.model_dump(mode='json'), "admin")
 
         # Send email to shop (non-critical, don't fail if email fails)
         try:
@@ -621,10 +640,10 @@ async def bulk_approve_products(
                     moderation_notes=notes,
                     approval_fee=approval_fee
                 )
-                await connection_manager.send_to_client(event.model_dump(mode="json"), "shop", product.shop_id)
+                await connection_manager.send_to_client(event.model_dump(mode='json'), "shop", product.shop_id)
                 
                 # Broadcast to all users (mobile app users)
-                await connection_manager.broadcast_to_type(event.model_dump(mode="json"), "user")
+                await connection_manager.broadcast_to_type(event.model_dump(mode='json'), "user")
                 
                 # Send email notification
                 if shop:
@@ -649,7 +668,7 @@ async def bulk_approve_products(
         action="processed",
         product_id=None  # Bulk action
     )
-    await connection_manager.broadcast_to_type(queue_event.model_dump(mode="json"), "admin")
+    await connection_manager.broadcast_to_type(queue_event.model_dump(mode='json'), "admin")
     
     return {
         "message": f"Bulk approval completed: {len(approved)} succeeded, {len(failed)} failed",

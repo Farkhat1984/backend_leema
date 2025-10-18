@@ -82,6 +82,10 @@ class Settings(BaseSettings):
 
     # Frontend
     FRONTEND_URL: str = "https://www.leema.kz"
+    
+    # Backend API URLs (for mobile clients)
+    API_BASE_URL: str = "https://api.leema.kz"
+    WEBSOCKET_URL: str = "wss://api.leema.kz"
 
     # Rate limiting
     RATE_LIMIT_PER_MINUTE: str = "60/minute"

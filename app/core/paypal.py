@@ -22,9 +22,17 @@ class PayPalClient:
 
         self.client = PayPalHttpClient(environment)
 
-    async def create_order(self, amount: float, currency: str = "USD", description: str = "") -> Optional[Dict]:
+    async def create_order(self, amount: float, currency: str = "USD", description: str = "", platform: str = "web") -> Optional[Dict]:
         """Create PayPal order"""
         try:
+            # Determine return URLs based on platform
+            if platform == "mobile":
+                return_url = f"{settings.API_BASE_URL}/api/payments/paypal/success?platform=mobile"
+                cancel_url = f"{settings.API_BASE_URL}/api/payments/paypal/cancel?platform=mobile"
+            else:
+                return_url = f"{settings.API_BASE_URL}/api/payments/paypal/success?platform=web"
+                cancel_url = f"{settings.API_BASE_URL}/api/payments/paypal/cancel?platform=web"
+            
             request = OrdersCreateRequest()
             request.prefer("return=representation")
             request.request_body({
@@ -42,8 +50,8 @@ class PayPalClient:
                     "brand_name": settings.APP_NAME,
                     "landing_page": "BILLING",
                     "user_action": "PAY_NOW",
-                    "return_url": f"{settings.FRONTEND_URL}/success.html",
-                    "cancel_url": f"{settings.FRONTEND_URL}/cancel.html",
+                    "return_url": return_url,
+                    "cancel_url": cancel_url,
                 }
             })
 

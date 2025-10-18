@@ -126,6 +126,25 @@ async def root():
     return response
 
 
+@app.get("/api/v1/config")
+async def get_client_config():
+    """
+    Get client configuration for mobile apps
+    Returns API and WebSocket URLs
+    """
+    return {
+        "api_base_url": settings.API_BASE_URL,
+        "websocket_url": settings.WEBSOCKET_URL,
+        "api_version": "v1",
+        "endpoints": {
+            "websocket_user": f"{settings.WEBSOCKET_URL}/ws/user",
+            "websocket_shop": f"{settings.WEBSOCKET_URL}/ws/shop",
+            "websocket_admin": f"{settings.WEBSOCKET_URL}/ws/admin",
+            "websocket_products": f"{settings.WEBSOCKET_URL}/ws/products"
+        }
+    }
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint with database connectivity check"""
@@ -157,7 +176,8 @@ async def health_check():
 async def websocket_endpoint(
     websocket: WebSocket,
     client_type: str,
-    token: str = Query(...)
+    token: str = Query(...),
+    platform: str = Query("web")
 ):
     """
     WebSocket endpoint for real-time updates
@@ -165,11 +185,16 @@ async def websocket_endpoint(
     Parameters:
     - client_type: 'user', 'shop', or 'admin'
     - token: JWT access token for authentication
+    - platform: 'mobile' or 'web' (optional, default: 'web')
 
     Usage:
-    ws://localhost:8000/ws/user?token=YOUR_JWT_TOKEN
+    ws://localhost:8000/ws/shop?token=YOUR_JWT_TOKEN&platform=mobile
+    wss://api.leema.kz/ws/shop?token=YOUR_JWT_TOKEN&platform=mobile
     """
-    # Check origin header for CORS
+    logger.info(f"📱 WebSocket connection attempt: client_type={client_type}, platform={platform}")
+    
+    # Check origin header for CORS (web browsers only)
+    # Mobile apps typically don't send Origin header
     origin = websocket.headers.get("origin")
     if origin:
         # Check if origin is allowed
@@ -188,12 +213,16 @@ async def websocket_endpoint(
             allowed = True
         
         if not allowed:
-            logger.warning(f"WebSocket connection rejected: origin {origin} not allowed")
+            logger.warning(f"❌ WebSocket connection rejected: origin {origin} not allowed")
             await websocket.close(code=1008, reason="Origin not allowed")
             return
+    else:
+        # No origin header - likely mobile app or direct connection
+        logger.info(f"📱 WebSocket connection without origin header (likely mobile app, platform={platform})")
     
     # Validate client type
     if client_type not in ["user", "shop", "admin"]:
+        logger.error(f"❌ Invalid client type: {client_type}")
         await websocket.close(code=1008, reason="Invalid client type")
         return
 
@@ -201,6 +230,7 @@ async def websocket_endpoint(
     try:
         payload = decode_access_token(token)
         if not payload:
+            logger.error("❌ Invalid token: decode returned None")
             await websocket.close(code=1008, reason="Invalid token")
             return
 
@@ -212,18 +242,23 @@ async def websocket_endpoint(
         elif client_type == "admin":
             client_id = payload.get("user_id")  # Admins are users with admin role
         else:
+            logger.error(f"❌ Invalid client type in auth: {client_type}")
             await websocket.close(code=1008, reason="Invalid client type")
             return
 
         if not client_id:
+            logger.error(f"❌ Token missing required ID for client_type={client_type}. Token payload: user_id={payload.get('user_id')}, shop_id={payload.get('shop_id')}, role={payload.get('role')}")
             await websocket.close(code=1008, reason="Invalid token payload")
             return
 
     except Exception as e:
-        logger.error(f"WebSocket authentication error: {e}")
+        logger.error(f"❌ WebSocket authentication error: {e}")
         await websocket.close(code=1008, reason="Authentication failed")
         return
 
+    # Log platform for analytics
+    logger.info(f"✅ WebSocket authenticated: client_type={client_type}, client_id={client_id}, platform={platform}")
+    
     # Connect client
     await connection_manager.connect(websocket, client_type, client_id)
 
@@ -264,6 +299,31 @@ async def websocket_endpoint(
 
     finally:
         connection_manager.disconnect(websocket, client_type, client_id)
+
+
+@app.websocket("/ws/products")
+async def websocket_products_alias(
+    websocket: WebSocket,
+    token: str = Query(...),
+    client_type: str = Query("shop"),
+    platform: str = Query("mobile")
+):
+    """
+    WebSocket endpoint alias for products (mobile compatibility)
+    
+    This is an alias for /ws/shop endpoint to support mobile apps
+    that connect to /ws/products
+    
+    Parameters:
+    - token: JWT access token for authentication
+    - client_type: 'shop' (default), 'user', or 'admin'
+    - platform: 'mobile' (default) or 'web'
+    
+    Usage:
+    wss://api.leema.kz/ws/products?token=YOUR_JWT_TOKEN&client_type=shop&platform=mobile
+    """
+    # Redirect to main websocket endpoint logic
+    await websocket_endpoint(websocket, client_type, token, platform)
 
 
 @app.get("/ws/stats")

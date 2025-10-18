@@ -63,6 +63,8 @@ class ProductModerationEventData(BaseModel):
     moderation_notes: Optional[str] = None
     admin_id: int
     approval_fee: Optional[float] = None  # For approved products
+    # Full product data for mobile apps
+    product: Optional[Dict[str, Any]] = None
 
 
 class ProductEventData(BaseModel):
@@ -73,6 +75,8 @@ class ProductEventData(BaseModel):
     action: str  # created, updated, deleted
     moderation_status: Optional[str] = None
     is_active: Optional[bool] = None
+    # Full product data for mobile apps
+    product: Optional[Dict[str, Any]] = None
 
 
 # Balance Events
@@ -162,7 +166,8 @@ def create_product_moderation_event(
     admin_id: int,
     shop_name: Optional[str] = None,
     moderation_notes: Optional[str] = None,
-    approval_fee: Optional[float] = None
+    approval_fee: Optional[float] = None,
+    product: Optional[Dict[str, Any]] = None
 ) -> WebhookEvent:
     """Create product moderation event"""
     return WebhookEvent(
@@ -175,7 +180,8 @@ def create_product_moderation_event(
             moderation_status=moderation_status,
             moderation_notes=moderation_notes,
             admin_id=admin_id,
-            approval_fee=approval_fee
+            approval_fee=approval_fee,
+            product=product
         ).model_dump()
     )
 
@@ -187,7 +193,8 @@ def create_product_event(
     shop_id: int,
     action: str,
     moderation_status: Optional[str] = None,
-    is_active: Optional[bool] = None
+    is_active: Optional[bool] = None,
+    product: Optional[Dict[str, Any]] = None
 ) -> WebhookEvent:
     """Create product CRUD event"""
     return WebhookEvent(
@@ -198,7 +205,8 @@ def create_product_event(
             shop_id=shop_id,
             action=action,
             moderation_status=moderation_status,
-            is_active=is_active
+            is_active=is_active,
+            product=product
         ).model_dump()
     )
 
