@@ -23,7 +23,7 @@ class AdminDashboard(BaseModel):
 
 
 class ModerationAction(BaseModel):
-    action: str = Field(..., pattern="^(approve|reject)$")
+    action: Optional[str] = Field(None, pattern="^(approve|reject)$")
     notes: Optional[str] = Field(None, max_length=1000)
 
 

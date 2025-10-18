@@ -252,6 +252,9 @@ async def approve_product(
         )
         await connection_manager.send_to_client(event.model_dump(mode="json"), "shop", product.shop_id)
 
+        # Broadcast to all users (mobile app users)
+        await connection_manager.broadcast_to_type(event.model_dump(mode="json"), "user")
+
         # Update moderation queue for admins
         pending_count_result = await db.execute(
             select(func.count(ModerationQueue.id)).where(ModerationQueue.reviewed_at.is_(None))
@@ -591,6 +594,9 @@ async def bulk_approve_products(
     db: AsyncSession = Depends(get_db)
 ):
     """Bulk approve multiple products (admin only)"""
+    from app.services.shop_service import shop_service
+    approval_fee = await settings_service.get_setting_float(db, "shop_approval_fee", 5.0)
+    
     approved = []
     failed = []
     
@@ -600,17 +606,50 @@ async def bulk_approve_products(
             if product:
                 approved.append(product_id)
                 
-                # Send notification
-                from app.services.shop_service import shop_service
+                # Get shop info
                 shop = await shop_service.get_by_id(db, product.shop_id)
+                
+                # Send WebSocket notification to shop
+                event = create_product_moderation_event(
+                    event_type=WebhookEventType.PRODUCT_APPROVED,
+                    product_id=product.id,
+                    product_name=product.name,
+                    shop_id=product.shop_id,
+                    moderation_status="approved",
+                    admin_id=admin.id,
+                    shop_name=shop.shop_name if shop else None,
+                    moderation_notes=notes,
+                    approval_fee=approval_fee
+                )
+                await connection_manager.send_to_client(event.model_dump(mode="json"), "shop", product.shop_id)
+                
+                # Broadcast to all users (mobile app users)
+                await connection_manager.broadcast_to_type(event.model_dump(mode="json"), "user")
+                
+                # Send email notification
                 if shop:
-                    await email_service.send_product_approved_notification(
-                        shop.email,
-                        shop.shop_name,
-                        product.name
-                    )
+                    try:
+                        await email_service.send_product_approved_notification(
+                            shop.email,
+                            shop.shop_name,
+                            product.name
+                        )
+                    except Exception as email_error:
+                        logger.warning(f"Failed to send approval email for product {product_id}: {email_error}")
         except Exception as e:
             failed.append({"product_id": product_id, "error": str(e)})
+    
+    # Update moderation queue for admins
+    pending_count_result = await db.execute(
+        select(func.count(ModerationQueue.id)).where(ModerationQueue.reviewed_at.is_(None))
+    )
+    pending_count = pending_count_result.scalar() or 0
+    queue_event = create_moderation_queue_event(
+        pending_count=pending_count,
+        action="processed",
+        product_id=None  # Bulk action
+    )
+    await connection_manager.broadcast_to_type(queue_event.model_dump(mode="json"), "admin")
     
     return {
         "message": f"Bulk approval completed: {len(approved)} succeeded, {len(failed)} failed",

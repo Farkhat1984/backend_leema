@@ -182,7 +182,8 @@ class ProductService:
         # Check shop balance using Decimal comparison
         if shop.balance < approval_fee_decimal:
             raise ValueError(
-                f"Недостаточно средств на балансе магазина. Требуется: ${approval_fee}, доступно: ${shop.balance}"
+                f"Недостаточно средств на балансе магазина '{shop.shop_name}'. "
+                f"Требуется: ${approval_fee:.2f}, доступно: ${shop.balance:.2f}"
             )
 
         # Charge shop
