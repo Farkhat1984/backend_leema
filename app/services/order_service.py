@@ -20,14 +20,23 @@ class OrderService:
     async def create_order_from_cart(
         db: AsyncSession,
         user_id: int,
-        cart: Cart
+        cart: Cart,
+        payment_method: str = "paypal"
     ) -> Tuple[Optional[Order], Optional[str]]:
         """
         Create order from cart items
         Returns: (Order, error_message)
         """
+        from app.models.order import PaymentMethod
+        
         if not cart or not cart.items:
             return None, "Cart is empty"
+        
+        # Validate payment method
+        try:
+            payment_method_enum = PaymentMethod(payment_method)
+        except ValueError:
+            return None, f"Invalid payment method: {payment_method}"
         
         # Validate all products are still available
         total_amount = 0.0
@@ -47,6 +56,7 @@ class OrderService:
             user_id=user_id,
             order_type=OrderType.PURCHASE,
             status=OrderStatus.PENDING,
+            payment_method=payment_method_enum,
             total_amount=total_amount
         )
         db.add(order)
@@ -70,7 +80,7 @@ class OrderService:
         await db.commit()
         await db.refresh(order)
         
-        logger.info(f"Created order {order_number} from cart for user {user_id}, total: ${total_amount:.2f}")
+        logger.info(f"Created order {order_number} from cart for user {user_id}, total: ${total_amount:.2f}, payment: {payment_method}")
         return order, None
 
     @staticmethod

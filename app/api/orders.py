@@ -34,14 +34,14 @@ async def create_order_from_cart(
 ):
     """
     Create order from cart and initiate payment (Flutter mobile app)
-    Supports PayPal payment (balance payment coming soon)
+    Supports PayPal and Balance payment methods
     """
     platform = "mobile" if x_client_platform == "mobile" else "web"
     
     if order_data.payment_method == "paypal":
         # Create order and PayPal payment
         payment_result = await payment_service.create_order_payment_from_cart(
-            db, current_user.id, platform=platform
+            db, current_user.id, platform=platform, payment_method="paypal"
         )
         
         if not payment_result:
@@ -55,15 +55,64 @@ async def create_order_from_cart(
             "approval_url": payment_result["approval_url"],
             "amount": payment_result["amount"],
             "payment_method": "paypal",
-            "status": "pending"
+            "status": payment_result.get("status", "pending")
         }
     
     elif order_data.payment_method == "balance":
-        # TODO: Implement balance payment in ЭТАП 5
-        raise HTTPException(
-            status_code=501,
-            detail="Balance payment not implemented yet. Please use PayPal."
+        # Create order and pay with balance
+        payment_result = await payment_service.create_order_payment_from_cart(
+            db, current_user.id, platform=platform, payment_method="balance"
         )
+        
+        if not payment_result:
+            # Get user to check balance
+            from app.services.user_service import user_service
+            user = await user_service.get_by_id(db, current_user.id)
+            
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to create order. Please check your balance: ${user.balance if user else 0:.2f}"
+            )
+        
+        # Send WebSocket notification for completed order
+        from app.core.websocket import connection_manager
+        from app.schemas.webhook import create_order_event, WebhookEventType
+        
+        order_event = create_order_event(
+            event_type=WebhookEventType.ORDER_COMPLETED,
+            order_id=payment_result["order_id"],
+            order_number=payment_result["order_number"],
+            user_id=current_user.id,
+            total_amount=payment_result["amount"],
+            status="completed"
+        )
+        
+        # Notify user
+        await connection_manager.send_to_client(order_event.model_dump(mode='json'), "user", current_user.id)
+        
+        # Notify shops (get order to see items)
+        from app.services.order_service import order_service
+        order = await order_service.get_order_by_id(db, payment_result["order_id"])
+        if order:
+            notified_shops = set()
+            for item in order.items:
+                if item.shop_id not in notified_shops:
+                    await connection_manager.send_to_client(order_event.model_dump(mode='json'), "shop", item.shop_id)
+                    notified_shops.add(item.shop_id)
+        
+        # Notify admins
+        await connection_manager.broadcast_to_type(order_event.model_dump(mode='json'), "admin")
+        
+        logger.info(f"[ORDER] Created and completed order {payment_result['order_number']} with balance for user {current_user.id}")
+        
+        return {
+            "order_id": payment_result["order_id"],
+            "order_number": payment_result["order_number"],
+            "amount": payment_result["amount"],
+            "payment_method": "balance",
+            "status": "completed",
+            "message": "Order paid successfully with your balance"
+        }
     
     else:
         raise HTTPException(status_code=400, detail="Invalid payment method")

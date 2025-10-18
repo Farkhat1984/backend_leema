@@ -39,6 +39,7 @@ class OrderResponse(BaseModel):
     user_id: int
     order_type: str
     status: str
+    payment_method: str = "paypal"
     total_amount: float
     
     # Legacy fields

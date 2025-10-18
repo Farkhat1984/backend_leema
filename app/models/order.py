@@ -29,6 +29,11 @@ class OrderStatus(str, enum.Enum):
     REFUNDED = "refunded"
 
 
+class PaymentMethod(str, enum.Enum):
+    PAYPAL = "paypal"
+    BALANCE = "balance"
+
+
 class Order(Base):
     __tablename__ = "orders"
 
@@ -43,6 +48,7 @@ class Order(Base):
     
     order_type: Mapped[OrderType] = mapped_column(Enum(OrderType), default=OrderType.PURCHASE, nullable=False)
     status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.PENDING, nullable=False)
+    payment_method: Mapped[PaymentMethod] = mapped_column(Enum(PaymentMethod), default=PaymentMethod.PAYPAL, nullable=False)
     
     total_amount: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
     
