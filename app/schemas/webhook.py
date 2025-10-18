@@ -28,6 +28,13 @@ class WebhookEventType(str, Enum):
     # Order events
     ORDER_CREATED = "order.created"
     ORDER_COMPLETED = "order.completed"
+    ORDER_CANCELLED = "order.cancelled"
+
+    # Refund events
+    REFUND_REQUESTED = "refund.requested"
+    REFUND_APPROVED = "refund.approved"
+    REFUND_REJECTED = "refund.rejected"
+    REFUND_COMPLETED = "refund.completed"
 
     # Review events
     REVIEW_CREATED = "review.created"
@@ -348,5 +355,44 @@ def create_moderation_queue_event(
             pending_count=pending_count,
             action=action,
             product_id=product_id
+        ).model_dump()
+    )
+
+
+class RefundEventData(BaseModel):
+    """Refund event data"""
+    refund_id: int
+    order_id: int
+    order_number: str
+    user_id: int
+    amount: float
+    reason: str
+    status: str
+    admin_notes: Optional[str] = None
+
+
+def create_refund_event(
+    event_type: WebhookEventType,
+    refund_id: int,
+    order_id: int,
+    order_number: str,
+    user_id: int,
+    amount: float,
+    reason: str,
+    status: str,
+    admin_notes: Optional[str] = None
+) -> WebhookEvent:
+    """Create refund event"""
+    return WebhookEvent(
+        event=event_type,
+        data=RefundEventData(
+            refund_id=refund_id,
+            order_id=order_id,
+            order_number=order_number,
+            user_id=user_id,
+            amount=amount,
+            reason=reason,
+            status=status,
+            admin_notes=admin_notes
         ).model_dump()
     )

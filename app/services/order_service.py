@@ -238,5 +238,156 @@ class OrderService:
             await db.rollback()
             return False
 
+    @staticmethod
+    async def can_cancel_order(order: Order) -> Tuple[bool, Optional[str]]:
+        """
+        Check if order can be cancelled
+        Returns: (can_cancel, reason)
+        """
+        if order.status == OrderStatus.CANCELLED:
+            return False, "Order is already cancelled"
+        
+        if order.status == OrderStatus.REFUNDED:
+            return False, "Order has been refunded, cannot cancel"
+        
+        if order.status == OrderStatus.COMPLETED:
+            return False, "Completed orders cannot be cancelled. Please request a refund instead."
+        
+        if order.status == OrderStatus.PENDING:
+            return True, None
+        
+        return False, f"Cannot cancel order with status: {order.status.value}"
+
+    @staticmethod
+    async def cancel_order(
+        db: AsyncSession,
+        order: Order,
+        user_id: int,
+        reason: Optional[str] = None
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Cancel order and refund to user balance
+        Only for PENDING orders
+        """
+        # Verify ownership
+        if order.user_id != user_id:
+            return False, "Order does not belong to this user"
+        
+        # Check if can cancel
+        can_cancel, error = await OrderService.can_cancel_order(order)
+        if not can_cancel:
+            return False, error
+        
+        try:
+            from app.models.user import User
+            
+            # Get user
+            user_result = await db.execute(select(User).where(User.id == user_id))
+            user = user_result.scalar_one_or_none()
+            
+            if not user:
+                return False, "User not found"
+            
+            # Refund amount to user balance
+            old_balance = float(user.balance)
+            user.balance = old_balance + float(order.total_amount)
+            
+            # Create refund transaction
+            refund_transaction = Transaction(
+                user_id=user_id,
+                type=TransactionType.REFUND,
+                amount=float(order.total_amount),
+                status=TransactionStatus.COMPLETED,
+                extra_data={
+                    "order_id": order.id,
+                    "order_number": order.order_number,
+                    "reason": reason or "Order cancelled by user",
+                    "original_amount": float(order.total_amount)
+                }
+            )
+            db.add(refund_transaction)
+            
+            # Update order status
+            order.status = OrderStatus.CANCELLED
+            
+            await db.commit()
+            
+            logger.info(
+                f"Order {order.order_number} cancelled by user {user_id}. "
+                f"Refunded ${order.total_amount:.2f} to balance"
+            )
+            
+            return True, None
+            
+        except Exception as e:
+            logger.error(f"Error cancelling order {order.id}: {e}", exc_info=True)
+            await db.rollback()
+            return False, f"Failed to cancel order: {str(e)}"
+
+    @staticmethod
+    async def request_refund(
+        db: AsyncSession,
+        order: Order,
+        user_id: int,
+        reason: str
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Request refund for completed order
+        Creates Refund request for admin approval
+        """
+        from app.models.refund import Refund, RefundStatus
+        
+        # Verify ownership
+        if order.user_id != user_id:
+            return False, "Order does not belong to this user"
+        
+        # Check order status
+        if order.status != OrderStatus.COMPLETED:
+            return False, "Only completed orders can be refunded"
+        
+        if order.status == OrderStatus.REFUNDED:
+            return False, "Order has already been refunded"
+        
+        if order.status == OrderStatus.CANCELLED:
+            return False, "Cancelled orders cannot be refunded"
+        
+        # Check if refund already exists
+        if order.transaction_id:
+            existing_refund_result = await db.execute(
+                select(Refund).where(Refund.transaction_id == order.transaction_id)
+            )
+            existing_refund = existing_refund_result.scalar_one_or_none()
+            
+            if existing_refund:
+                return False, f"Refund already exists with status: {existing_refund.status.value}"
+        
+        try:
+            # Create refund request
+            refund = Refund(
+                transaction_id=order.transaction_id,
+                user_id=user_id,
+                reason=reason,
+                status=RefundStatus.REQUESTED
+            )
+            db.add(refund)
+            
+            # Update order status to indicate refund requested
+            order.status = OrderStatus.REFUNDED
+            
+            await db.commit()
+            await db.refresh(refund)
+            
+            logger.info(
+                f"Refund request created for order {order.order_number} "
+                f"by user {user_id}. Refund ID: {refund.id}"
+            )
+            
+            return True, None
+            
+        except Exception as e:
+            logger.error(f"Error creating refund request for order {order.id}: {e}", exc_info=True)
+            await db.rollback()
+            return False, f"Failed to create refund request: {str(e)}"
+
 
 order_service = OrderService()
