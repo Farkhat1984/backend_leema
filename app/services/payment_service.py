@@ -1,4 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from app.models.transaction import Transaction, TransactionType, TransactionStatus
 from app.core.paypal import paypal_client
 from app.services.user_service import user_service
@@ -215,13 +216,80 @@ class PaymentService:
         return transaction
 
     @staticmethod
+    async def create_order_payment_from_cart(
+        db: AsyncSession,
+        user_id: int,
+        platform: str = "mobile"
+    ) -> Optional[Dict]:
+        """
+        Create PayPal payment for order from cart
+        Returns: {order_id, order_number, approval_url, amount}
+        """
+        from app.services.cart_service import cart_service
+        from app.services.order_service import order_service
+        
+        # Get cart with items
+        cart = await cart_service.get_cart_with_items(db, user_id)
+        if not cart or not cart.items:
+            logger.warning(f"User {user_id} tried to create order from empty cart")
+            return None
+        
+        # Create order from cart
+        order, error = await order_service.create_order_from_cart(db, user_id, cart)
+        if error or not order:
+            logger.error(f"Failed to create order from cart for user {user_id}: {error}")
+            return None
+        
+        # Create PayPal order
+        paypal_order = await paypal_client.create_order(
+            amount=float(order.total_amount),
+            description=f"Order {order.order_number}",
+            platform=platform
+        )
+        if not paypal_order:
+            logger.error(f"Failed to create PayPal order for {order.order_number}")
+            return None
+        
+        # Create transaction
+        transaction = Transaction(
+            user_id=user_id,
+            type=TransactionType.PRODUCT_PURCHASE,
+            amount=float(order.total_amount),
+            paypal_order_id=paypal_order["order_id"],
+            status=TransactionStatus.PENDING,
+            extra_data={
+                "order_id": order.id,
+                "order_number": order.order_number,
+                "items_count": len(order.items),
+                "description": f"Order {order.order_number}"
+            }
+        )
+        db.add(transaction)
+        
+        # Link transaction to order
+        order.transaction_id = transaction.id
+        
+        await db.commit()
+        await db.refresh(transaction)
+        await db.refresh(order)
+        
+        logger.info(f"Created payment for order {order.order_number}: ${order.total_amount:.2f}")
+        return {
+            "transaction_id": transaction.id,
+            "order_id": order.id,
+            "order_number": order.order_number,
+            "approval_url": paypal_order["approval_url"],
+            "amount": float(order.total_amount),
+        }
+
+    @staticmethod
     async def process_product_purchase(
         db: AsyncSession,
         user_id: int,
         product_id: int,
         platform: str = "web"
     ) -> Optional[Dict]:
-        """Process product purchase (creates PayPal payment)"""
+        """Process product purchase (creates PayPal payment) - LEGACY for single product"""
         user = await user_service.get_by_id(db, user_id)
         product = await product_service.get_by_id(db, product_id)
 
@@ -273,6 +341,26 @@ class PaymentService:
         if transaction.type != TransactionType.PRODUCT_PURCHASE:
             return False
 
+        # Check if this is an order (new flow) or single product (legacy)
+        order_id = transaction.extra_data.get("order_id")
+        
+        if order_id:
+            # New flow: Complete full order
+            from app.services.order_service import order_service
+            from app.models.order import Order
+            
+            order_result = await db.execute(
+                select(Order).where(Order.id == order_id)
+            )
+            order = order_result.scalar_one_or_none()
+            
+            if order:
+                return await order_service.complete_order(db, order, transaction)
+            
+            logger.error(f"Order {order_id} not found for transaction {transaction.id}")
+            return False
+        
+        # Legacy flow: Single product purchase
         product_id = transaction.extra_data.get("product_id")
         shop_id = transaction.extra_data.get("shop_id")
 

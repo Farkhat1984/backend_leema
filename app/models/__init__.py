@@ -6,8 +6,9 @@ from app.models.generation import Generation
 from app.models.settings import PlatformSettings
 from app.models.moderation import ModerationQueue
 from app.models.refund import Refund
-from app.models.order import Order
+from app.models.order import Order, OrderItem
 from app.models.review import Review
+from app.models.cart import Cart, CartItem
 
 __all__ = [
     "User",
@@ -19,5 +20,8 @@ __all__ = [
     "ModerationQueue",
     "Refund",
     "Order",
+    "OrderItem",
     "Review",
+    "Cart",
+    "CartItem",
 ]
