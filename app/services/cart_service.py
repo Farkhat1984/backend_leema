@@ -1,6 +1,7 @@
 """Cart service for shopping cart operations"""
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import joinedload, selectinload
 from app.models.cart import Cart, CartItem
 from app.models.product import Product
 from app.models.shop import Shop
@@ -32,29 +33,27 @@ class CartService:
 
     @staticmethod
     async def get_cart_with_items(db: AsyncSession, user_id: int) -> Optional[Cart]:
-        """Get cart with all items and product details"""
-        result = await db.execute(
-            select(Cart)
-            .where(Cart.user_id == user_id)
-        )
-        cart = result.scalar_one_or_none()
-        
-        if cart:
-            # Load items with products
-            items_result = await db.execute(
-                select(CartItem)
-                .where(CartItem.cart_id == cart.id)
-            )
-            cart.items = list(items_result.scalars().all())
-            
-            # Load products for each item
-            for item in cart.items:
-                product_result = await db.execute(
-                    select(Product).where(Product.id == item.product_id)
+        """Get cart with all items and product details using proper eager loading"""
+        try:
+            # Use selectinload to eagerly load items and their products
+            result = await db.execute(
+                select(Cart)
+                .where(Cart.user_id == user_id)
+                .options(
+                    selectinload(Cart.items).selectinload(CartItem.product)
                 )
-                item.product = product_result.scalar_one_or_none()
-        
-        return cart
+            )
+            cart = result.scalar_one_or_none()
+            
+            if cart:
+                logger.info(f"[CART] Loaded cart {cart.id} for user {user_id} with {len(cart.items)} items")
+            else:
+                logger.info(f"[CART] No cart found for user {user_id}")
+            
+            return cart
+        except Exception as e:
+            logger.error(f"[CART] Error getting cart with items for user {user_id}: {e}", exc_info=True)
+            return None
 
     @staticmethod
     async def add_item(

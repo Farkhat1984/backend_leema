@@ -226,120 +226,137 @@ class PaymentService:
         Create payment for order from cart (PayPal or Balance)
         Returns: {order_id, order_number, approval_url (if paypal), amount, payment_method}
         """
-        from app.services.cart_service import cart_service
-        from app.services.order_service import order_service
-        from app.models.order import PaymentMethod
-        
-        # Get cart with items
-        cart = await cart_service.get_cart_with_items(db, user_id)
-        if not cart or not cart.items:
-            logger.warning(f"User {user_id} tried to create order from empty cart")
-            return None
-        
-        # Create order from cart with payment method
-        order, error = await order_service.create_order_from_cart(
-            db, user_id, cart, payment_method=payment_method
-        )
-        if error or not order:
-            logger.error(f"Failed to create order from cart for user {user_id}: {error}")
-            return None
-        
-        if payment_method == "balance":
-            # Pay with user balance
-            user = await user_service.get_by_id(db, user_id)
-            if not user:
-                logger.error(f"User {user_id} not found")
+        try:
+            from app.services.cart_service import cart_service
+            from app.services.order_service import order_service
+            from app.models.order import PaymentMethod
+            
+            # Get cart with items
+            cart = await cart_service.get_cart_with_items(db, user_id)
+            if not cart or not cart.items:
+                logger.warning(f"User {user_id} tried to create order from empty cart")
                 return None
             
-            # Check if user has enough balance
-            if user.balance < float(order.total_amount):
-                logger.warning(f"User {user_id} has insufficient balance: {user.balance} < {order.total_amount}")
+            # Create order from cart with payment method
+            order, error = await order_service.create_order_from_cart(
+                db, user_id, cart, payment_method=payment_method
+            )
+            if error or not order:
+                logger.error(f"Failed to create order from cart for user {user_id}: {error}")
                 return None
             
-            # Create transaction
-            transaction = Transaction(
-                user_id=user_id,
-                type=TransactionType.PRODUCT_PURCHASE,
-                amount=float(order.total_amount),
-                status=TransactionStatus.COMPLETED,
-                extra_data={
-                    "order_id": order.id,
-                    "order_number": order.order_number,
-                    "items_count": len(order.items),
+            if payment_method == "balance":
+                # Pay with user balance
+                user = await user_service.get_by_id(db, user_id)
+                if not user:
+                    logger.error(f"User {user_id} not found")
+                    return None
+                
+                # Check if user has enough balance
+                if user.balance < float(order.total_amount):
+                    logger.warning(f"User {user_id} has insufficient balance: {user.balance} < {order.total_amount}")
+                    return None
+                
+                # Create transaction
+                transaction = Transaction(
+                    user_id=user_id,
+                    type=TransactionType.PRODUCT_PURCHASE,
+                    amount=float(order.total_amount),
+                    status=TransactionStatus.COMPLETED,
+                    extra_data={
+                        "order_id": order.id,
+                        "order_number": order.order_number,
+                        "items_count": len(cart.items),
+                        "payment_method": "balance",
+                        "description": f"Order {order.order_number}"
+                    }
+                )
+                db.add(transaction)
+                await db.flush()  # Flush to get transaction.id
+                
+                # Deduct balance from user
+                await user_service.deduct_balance(db, user_id, float(order.total_amount))
+                
+                # Link transaction to order
+                order.transaction_id = transaction.id
+                
+                # Save order details before complete_order
+                order_id = order.id
+                order_number = order.order_number
+                total_amount = float(order.total_amount)
+                
+                # Complete order immediately (distribute funds to shops) - BEFORE final commit
+                success = await order_service.complete_order(db, order_id, transaction.id)
+                
+                if not success:
+                    logger.error(f"Failed to complete order {order_number}, rolling back payment")
+                    await db.rollback()
+                    return None
+                
+                # Now commit everything together
+                await db.commit()
+                
+                logger.info(f"Created balance payment for order {order_number}: ${total_amount:.2f}")
+                return {
+                    "transaction_id": transaction.id,
+                    "order_id": order_id,
+                    "order_number": order_number,
+                    "amount": total_amount,
                     "payment_method": "balance",
-                    "description": f"Order {order.order_number}"
+                    "status": "completed"
                 }
-            )
-            db.add(transaction)
             
-            # Deduct balance from user
-            await user_service.deduct_balance(db, user_id, float(order.total_amount))
-            
-            # Link transaction to order
-            order.transaction_id = transaction.id
-            
-            await db.commit()
-            await db.refresh(transaction)
-            await db.refresh(order)
-            
-            # Complete order immediately (distribute funds to shops)
-            await order_service.complete_order(db, order, transaction)
-            
-            logger.info(f"Created balance payment for order {order.order_number}: ${order.total_amount:.2f}")
-            return {
-                "transaction_id": transaction.id,
-                "order_id": order.id,
-                "order_number": order.order_number,
-                "amount": float(order.total_amount),
-                "payment_method": "balance",
-                "status": "completed"
-            }
-        
-        else:  # paypal
-            # Create PayPal order
-            paypal_order = await paypal_client.create_order(
-                amount=float(order.total_amount),
-                description=f"Order {order.order_number}",
-                platform=platform
-            )
-            if not paypal_order:
-                logger.error(f"Failed to create PayPal order for {order.order_number}")
-                return None
-            
-            # Create transaction
-            transaction = Transaction(
-                user_id=user_id,
-                type=TransactionType.PRODUCT_PURCHASE,
-                amount=float(order.total_amount),
-                paypal_order_id=paypal_order["order_id"],
-                status=TransactionStatus.PENDING,
-                extra_data={
+            else:  # paypal
+                # Create PayPal order
+                logger.info(f"Creating PayPal order for {order.order_number}, amount: ${order.total_amount:.2f}")
+                paypal_order = await paypal_client.create_order(
+                    amount=float(order.total_amount),
+                    description=f"Order {order.order_number}",
+                    platform=platform
+                )
+                if not paypal_order:
+                    logger.error(f"Failed to create PayPal order for {order.order_number}")
+                    return None
+                
+                # Create transaction
+                transaction = Transaction(
+                    user_id=user_id,
+                    type=TransactionType.PRODUCT_PURCHASE,
+                    amount=float(order.total_amount),
+                    paypal_order_id=paypal_order["order_id"],
+                    status=TransactionStatus.PENDING,
+                    extra_data={
+                        "order_id": order.id,
+                        "order_number": order.order_number,
+                        "items_count": len(cart.items),
+                        "payment_method": "paypal",
+                        "description": f"Order {order.order_number}"
+                    }
+                )
+                db.add(transaction)
+                
+                # Link transaction to order
+                order.transaction_id = transaction.id
+                
+                await db.commit()
+                await db.refresh(transaction)
+                await db.refresh(order)
+                
+                logger.info(f"Created PayPal payment for order {order.order_number}: ${order.total_amount:.2f}, PayPal ID: {paypal_order['order_id']}")
+                return {
+                    "transaction_id": transaction.id,
                     "order_id": order.id,
                     "order_number": order.order_number,
-                    "items_count": len(order.items),
+                    "approval_url": paypal_order["approval_url"],
+                    "amount": float(order.total_amount),
                     "payment_method": "paypal",
-                    "description": f"Order {order.order_number}"
+                    "status": "pending"
                 }
-            )
-            db.add(transaction)
-            
-            # Link transaction to order
-            order.transaction_id = transaction.id
-            
-            await db.commit()
-            await db.refresh(transaction)
-            await db.refresh(order)
-            
-            logger.info(f"Created PayPal payment for order {order.order_number}: ${order.total_amount:.2f}")
-            return {
-                "transaction_id": transaction.id,
-                "order_id": order.id,
-                "order_number": order.order_number,
-                "approval_url": paypal_order["approval_url"],
-                "amount": float(order.total_amount),
-                "payment_method": "paypal",
-                "status": "pending"
-            }
+        
+        except Exception as e:
+            logger.error(f"Error in create_order_payment_from_cart for user {user_id}: {e}", exc_info=True)
+            await db.rollback()
+            return None
 
     @staticmethod
     async def process_product_purchase(
@@ -406,18 +423,8 @@ class PaymentService:
         if order_id:
             # New flow: Complete full order
             from app.services.order_service import order_service
-            from app.models.order import Order
             
-            order_result = await db.execute(
-                select(Order).where(Order.id == order_id)
-            )
-            order = order_result.scalar_one_or_none()
-            
-            if order:
-                return await order_service.complete_order(db, order, transaction)
-            
-            logger.error(f"Order {order_id} not found for transaction {transaction.id}")
-            return False
+            return await order_service.complete_order(db, order_id, transaction.id)
         
         # Legacy flow: Single product purchase
         product_id = transaction.extra_data.get("product_id")

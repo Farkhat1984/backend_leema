@@ -1,13 +1,16 @@
+# Production Docker Compose Configuration
+# Use this for production deployment (no code mounting, no hot-reload)
+
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: fashion_postgres
+    container_name: fashion_postgres_prod
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-fashionuser}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-Ckdshfh231161}
       POSTGRES_DB: ${POSTGRES_DB:-fashion_platform}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data_prod:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
@@ -19,21 +22,12 @@ services:
 
   backend:
     build: .
-    # For production, use optimized Dockerfile:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile.optimized
-    container_name: fashion_backend
+    container_name: fashion_backend_prod
     env_file:
       - .env
     volumes:
-      # Mount application code for hot-reload (development mode)
-      - ./app:/app/app
-      - ./alembic:/app/alembic
-      - ./alembic.ini:/app/alembic.ini
+      # Only mount uploads directory in production
       - ./uploads:/app/uploads
-      # Exclude Python cache and virtual environment
-      - /app/app/__pycache__
     ports:
       - "8000:8000"
     depends_on:
@@ -43,9 +37,9 @@ services:
     command: >
       sh -c "
         alembic upgrade head &&
-        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
       "
 
 volumes:
-  postgres_data:
+  postgres_data_prod:
     driver: local

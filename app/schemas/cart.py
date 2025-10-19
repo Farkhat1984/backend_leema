@@ -46,7 +46,7 @@ class CartResponse(BaseModel):
     items: List[CartItemResponse] = []
     total_items: int = 0
     total_price: float = 0.0
-    created_at: datetime
-    updated_at: datetime
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     
     model_config = {"from_attributes": True}

@@ -18,15 +18,15 @@ if TYPE_CHECKING:
 
 
 class OrderType(str, enum.Enum):
-    PURCHASE = "purchase"
-    RENTAL = "rental"
+    PURCHASE = "PURCHASE"  # Match database values
+    RENTAL = "RENTAL"
 
 
 class OrderStatus(str, enum.Enum):
-    PENDING = "pending"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    REFUNDED = "refunded"
+    PENDING = "PENDING"  # Match database values
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+    REFUNDED = "REFUNDED"
 
 
 class PaymentMethod(str, enum.Enum):
@@ -46,9 +46,9 @@ class Order(Base):
     shop_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("shops.id"), nullable=True)
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     
-    order_type: Mapped[OrderType] = mapped_column(Enum(OrderType), default=OrderType.PURCHASE, nullable=False)
-    status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.PENDING, nullable=False)
-    payment_method: Mapped[PaymentMethod] = mapped_column(Enum(PaymentMethod), default=PaymentMethod.PAYPAL, nullable=False)
+    order_type: Mapped[OrderType] = mapped_column(Enum(OrderType, native_enum=False, values_callable=lambda x: [e.value for e in x]), default=OrderType.PURCHASE, nullable=False)
+    status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus, native_enum=False, values_callable=lambda x: [e.value for e in x]), default=OrderStatus.PENDING, nullable=False)
+    payment_method: Mapped[str] = mapped_column(Enum(PaymentMethod, native_enum=False, values_callable=lambda x: [e.value for e in x]), default="paypal", nullable=False)
     
     total_amount: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
     

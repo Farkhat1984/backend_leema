@@ -4,6 +4,7 @@ from paypalhttp import HttpError
 from app.config import settings
 from typing import Optional, Dict
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -23,15 +24,15 @@ class PayPalClient:
         self.client = PayPalHttpClient(environment)
 
     async def create_order(self, amount: float, currency: str = "USD", description: str = "", platform: str = "web") -> Optional[Dict]:
-        """Create PayPal order"""
+        """Create PayPal order - runs synchronous PayPal SDK in thread pool"""
         try:
             # Determine return URLs based on platform
             if platform == "mobile":
-                return_url = f"{settings.API_BASE_URL}/api/payments/paypal/success?platform=mobile"
-                cancel_url = f"{settings.API_BASE_URL}/api/payments/paypal/cancel?platform=mobile"
+                return_url = f"{settings.API_BASE_URL}/api/v1/payments/paypal/success?platform=mobile"
+                cancel_url = f"{settings.API_BASE_URL}/api/v1/payments/paypal/cancel?platform=mobile"
             else:
-                return_url = f"{settings.API_BASE_URL}/api/payments/paypal/success?platform=web"
-                cancel_url = f"{settings.API_BASE_URL}/api/payments/paypal/cancel?platform=web"
+                return_url = f"{settings.API_BASE_URL}/api/v1/payments/paypal/success?platform=web"
+                cancel_url = f"{settings.API_BASE_URL}/api/v1/payments/paypal/cancel?platform=web"
             
             request = OrdersCreateRequest()
             request.prefer("return=representation")
@@ -55,7 +56,9 @@ class PayPalClient:
                 }
             })
 
-            response = self.client.execute(request)
+            # Run blocking PayPal SDK call in thread pool to avoid blocking event loop
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, self.client.execute, request)
 
             # Get approval URL
             approval_url = None
@@ -64,6 +67,7 @@ class PayPalClient:
                     approval_url = link.href
                     break
 
+            logger.info(f"PayPal order created: {response.result.id}, amount: {amount}")
             return {
                 "order_id": response.result.id,
                 "status": response.result.status,
@@ -71,18 +75,25 @@ class PayPalClient:
                 "amount": amount,
             }
         except HttpError as e:
-            logger.error(f"PayPal create order error: {e}")
+            logger.error(f"PayPal create order error: {e}", exc_info=True)
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error creating PayPal order: {e}", exc_info=True)
             return None
 
     async def capture_order(self, order_id: str) -> Optional[Dict]:
-        """Capture (complete) PayPal order"""
+        """Capture (complete) PayPal order - runs synchronous PayPal SDK in thread pool"""
         try:
             request = OrdersCaptureRequest(order_id)
-            response = self.client.execute(request)
+            
+            # Run blocking PayPal SDK call in thread pool to avoid blocking event loop
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, self.client.execute, request)
 
             capture_id = response.result.purchase_units[0].payments.captures[0].id
             amount = response.result.purchase_units[0].payments.captures[0].amount.value
 
+            logger.info(f"PayPal order captured: {order_id}, capture_id: {capture_id}")
             return {
                 "order_id": order_id,
                 "capture_id": capture_id,
@@ -90,14 +101,20 @@ class PayPalClient:
                 "amount": float(amount),
             }
         except HttpError as e:
-            logger.error(f"PayPal capture order error: {e}")
+            logger.error(f"PayPal capture order error: {e}", exc_info=True)
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error capturing PayPal order: {e}", exc_info=True)
             return None
 
     async def get_order(self, order_id: str) -> Optional[Dict]:
-        """Get order details"""
+        """Get order details - runs synchronous PayPal SDK in thread pool"""
         try:
             request = OrdersGetRequest(order_id)
-            response = self.client.execute(request)
+            
+            # Run blocking PayPal SDK call in thread pool to avoid blocking event loop
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, self.client.execute, request)
 
             return {
                 "order_id": response.result.id,
@@ -105,7 +122,10 @@ class PayPalClient:
                 "amount": float(response.result.purchase_units[0].amount.value),
             }
         except HttpError as e:
-            logger.error(f"PayPal get order error: {e}")
+            logger.error(f"PayPal get order error: {e}", exc_info=True)
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error getting PayPal order: {e}", exc_info=True)
             return None
 
 

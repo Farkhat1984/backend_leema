@@ -1,4 +1,4 @@
-.PHONY: help install install-uv dev test clean docker-build docker-up docker-down docker-logs
+.PHONY: help install install-uv dev test clean docker-build docker-up docker-down docker-logs docker-restart docker-rebuild
 
 # Default target
 help:
@@ -8,12 +8,18 @@ help:
 	@echo "  make dev             - Run development server"
 	@echo "  make test            - Run tests"
 	@echo "  make clean           - Clean up cache and temporary files"
-	@echo "  make docker-build    - Build Docker image"
-	@echo "  make docker-up       - Start Docker containers"
+	@echo ""
+	@echo "Docker commands (Development - with hot-reload):"
+	@echo "  make docker-up       - Start Docker containers (hot-reload enabled)"
 	@echo "  make docker-down     - Stop Docker containers"
+	@echo "  make docker-restart  - Restart backend container (code changes auto-reload)"
+	@echo "  make docker-rebuild  - Full rebuild (only if Dockerfile changed)"
 	@echo "  make docker-logs     - Show Docker logs"
+	@echo ""
+	@echo "Database commands:"
 	@echo "  make migrate         - Run database migrations"
 	@echo "  make migrate-create  - Create new migration"
+	@echo "  make create-admin    - Create admin user"
 
 # Install UV package manager
 install-uv:
@@ -51,24 +57,48 @@ clean:
 	rm -rf htmlcov .coverage
 	@echo "Cleanup complete!"
 
-# Docker commands
-docker-build:
-	docker build -t fashion-backend .
-
-docker-build-optimized:
-	docker build -f Dockerfile.optimized -t fashion-backend:optimized .
-
+# Docker commands - Development mode (with hot-reload)
 docker-up:
+	@echo "🚀 Starting Docker containers with hot-reload enabled..."
+	@echo "📝 Code changes will be automatically reflected (no rebuild needed)"
 	docker-compose up -d
+	@echo "✅ Containers started! View logs with: make docker-logs"
 
 docker-down:
+	@echo "🛑 Stopping Docker containers..."
 	docker-compose down
-
-docker-logs:
-	docker-compose logs -f backend
+	@echo "✅ Containers stopped!"
 
 docker-restart:
+	@echo "🔄 Restarting backend container..."
+	@echo "💡 Note: With hot-reload, you usually don't need this!"
 	docker-compose restart backend
+	@echo "✅ Backend restarted!"
+
+docker-rebuild:
+	@echo "🔨 Full rebuild (use only if Dockerfile or requirements.txt changed)..."
+	docker-compose down
+	docker-compose build --no-cache
+	docker-compose up -d
+	@echo "✅ Rebuild complete!"
+
+docker-logs:
+	@echo "📋 Showing backend logs (Ctrl+C to exit)..."
+	docker-compose logs -f backend
+
+docker-logs-all:
+	@echo "📋 Showing all logs (Ctrl+C to exit)..."
+	docker-compose logs -f
+
+docker-shell:
+	@echo "🐚 Opening shell in backend container..."
+	docker-compose exec backend /bin/sh
+
+# Quick restart without rebuild (for most code changes)
+docker-quick:
+	@echo "⚡ Quick restart (code changes should auto-reload)..."
+	docker-compose restart backend
+	@echo "✅ Done! Changes should be reflected immediately."
 
 # Database migrations
 migrate:
@@ -99,12 +129,10 @@ lint:
 setup: install migrate create-admin
 	@echo "Setup complete! Run 'make dev' to start the server."
 
-# Production deployment
-deploy:
-	@echo "Building optimized Docker image..."
-	docker build -f Dockerfile.optimized -t fashion-backend:optimized .
-	@echo "Stopping old containers..."
-	docker-compose down
-	@echo "Starting new containers..."
-	docker-compose up -d
-	@echo "Deployment complete!"
+# Production deployment (without hot-reload)
+deploy-prod:
+	@echo "⚠️  Deploying to PRODUCTION (no hot-reload)..."
+	docker-compose -f docker-compose.prod.yml down
+	docker-compose -f docker-compose.prod.yml build
+	docker-compose -f docker-compose.prod.yml up -d
+	@echo "✅ Production deployment complete!"

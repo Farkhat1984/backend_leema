@@ -27,15 +27,11 @@ class OrderService:
         Create order from cart items
         Returns: (Order, error_message)
         """
-        from app.models.order import PaymentMethod
-        
         if not cart or not cart.items:
             return None, "Cart is empty"
         
         # Validate payment method
-        try:
-            payment_method_enum = PaymentMethod(payment_method)
-        except ValueError:
+        if payment_method not in ["paypal", "balance"]:
             return None, f"Invalid payment method: {payment_method}"
         
         # Validate all products are still available
@@ -50,13 +46,13 @@ class OrderService:
         # Generate order number
         order_number = Order.generate_order_number()
         
-        # Create order
+        # Create order - use exact enum values from database
         order = Order(
             order_number=order_number,
             user_id=user_id,
-            order_type=OrderType.PURCHASE,
-            status=OrderStatus.PENDING,
-            payment_method=payment_method_enum,
+            order_type="PURCHASE",  # Database has uppercase
+            status="PENDING",  # Database has uppercase
+            payment_method=payment_method,  # Database has lowercase (paypal/balance)
             total_amount=total_amount
         )
         db.add(order)
@@ -168,8 +164,8 @@ class OrderService:
     @staticmethod
     async def complete_order(
         db: AsyncSession,
-        order: Order,
-        transaction: Transaction
+        order_id: int,
+        transaction_id: int
     ) -> bool:
         """
         Complete order after successful payment
@@ -177,14 +173,27 @@ class OrderService:
         - Distribute funds to shops
         - Clear cart
         - Update product stats
+        
+        Best practice: Accept IDs to avoid detached instance issues
         """
         try:
-            # Load order items if not loaded
-            if not order.items:
-                items_result = await db.execute(
-                    select(OrderItem).where(OrderItem.order_id == order.id)
-                )
-                order.items = list(items_result.scalars().all())
+            # Fetch order with eager loading
+            from sqlalchemy.orm import selectinload
+            
+            order_result = await db.execute(
+                select(Order)
+                .options(selectinload(Order.items))
+                .where(Order.id == order_id)
+            )
+            order = order_result.scalar_one_or_none()
+            
+            if not order:
+                logger.error(f"Order {order_id} not found")
+                return False
+            
+            # Save values before any modifications
+            order_number = order.order_number
+            user_id = order.user_id
             
             # Get commission rate
             from app.services.settings_service import settings_service
@@ -202,9 +211,10 @@ class OrderService:
                 if product:
                     product.purchases_count = (product.purchases_count or 0) + item.quantity
                 
-                # Calculate shop amount after commission
-                commission_amount = item.subtotal * (commission_rate / 100)
-                shop_amount = item.subtotal - commission_amount
+                # Calculate shop amount after commission (convert to float early)
+                item_subtotal = float(item.subtotal)
+                commission_amount = item_subtotal * (commission_rate / 100)
+                shop_amount = item_subtotal - commission_amount
                 
                 # Create commission transaction
                 commission_tx = Transaction(
@@ -213,11 +223,11 @@ class OrderService:
                     amount=commission_amount,
                     status=TransactionStatus.COMPLETED,
                     extra_data={
-                        "order_id": order.id,
-                        "order_number": order.order_number,
+                        "order_id": order_id,
+                        "order_number": order_number,
                         "product_id": item.product_id,
                         "commission_rate": commission_rate,
-                        "shop_amount": float(shop_amount)
+                        "shop_amount": shop_amount
                     }
                 )
                 db.add(commission_tx)
@@ -229,23 +239,25 @@ class OrderService:
                 shop = shop_result.scalar_one_or_none()
                 if shop:
                     shop.balance = float(shop.balance) + shop_amount
-                    logger.info(f"Credited shop {shop.id} with ${shop_amount:.2f} for order {order.order_number}")
+                    logger.info(f"Credited shop {shop.id} with ${shop_amount:.2f} for order {order_number}")
             
             # Update order status
-            order.status = OrderStatus.COMPLETED
-            order.transaction_id = transaction.id
+            order.status = "COMPLETED"
+            order.transaction_id = transaction_id
             
             # Clear user's cart
-            await cart_service.clear_cart(db, order.user_id)
+            await cart_service.clear_cart(db, user_id)
             
-            await db.commit()
+            # Don't commit here - let the caller commit
+            # await db.commit()
             
-            logger.info(f"Order {order.order_number} completed successfully")
+            logger.info(f"Order {order_number} completed successfully")
             return True
             
         except Exception as e:
-            logger.error(f"Error completing order {order.id}: {e}", exc_info=True)
-            await db.rollback()
+            logger.error(f"Error completing order {order_id or 'unknown'}: {e}", exc_info=True)
+            # Don't rollback here - let the caller handle it
+            # await db.rollback()
             return False
 
     @staticmethod

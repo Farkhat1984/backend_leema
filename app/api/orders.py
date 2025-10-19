@@ -36,86 +36,140 @@ async def create_order_from_cart(
     Create order from cart and initiate payment (Flutter mobile app)
     Supports PayPal and Balance payment methods
     """
-    platform = "mobile" if x_client_platform == "mobile" else "web"
-    
-    if order_data.payment_method == "paypal":
-        # Create order and PayPal payment
-        payment_result = await payment_service.create_order_payment_from_cart(
-            db, current_user.id, platform=platform, payment_method="paypal"
-        )
+    user_id = current_user.id  # Store user_id to avoid detached instance errors
+    try:
+        logger.info(f"[ORDER] Creating order from cart for user {user_id}, payment_method: {order_data.payment_method}")
         
-        if not payment_result:
-            raise HTTPException(status_code=400, detail="Failed to create order or payment")
-        
-        logger.info(f"[ORDER] Created order {payment_result['order_number']} for user {current_user.id}")
-        
-        return {
-            "order_id": payment_result["order_id"],
-            "order_number": payment_result["order_number"],
-            "approval_url": payment_result["approval_url"],
-            "amount": payment_result["amount"],
-            "payment_method": "paypal",
-            "status": payment_result.get("status", "pending")
-        }
-    
-    elif order_data.payment_method == "balance":
-        # Create order and pay with balance
-        payment_result = await payment_service.create_order_payment_from_cart(
-            db, current_user.id, platform=platform, payment_method="balance"
-        )
-        
-        if not payment_result:
-            # Get user to check balance
-            from app.services.user_service import user_service
-            user = await user_service.get_by_id(db, current_user.id)
-            
+        # Validate cart is not empty
+        from app.services.cart_service import cart_service
+        cart = await cart_service.get_cart_with_items(db, user_id)
+        if not cart or not cart.items:
+            logger.warning(f"[ORDER] User {user_id} attempted checkout with empty cart")
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to create order. Please check your balance: ${user.balance if user else 0:.2f}"
+                detail="Your cart is empty. Please add items before checkout."
             )
         
-        # Send WebSocket notification for completed order
-        from app.core.websocket import connection_manager
-        from app.schemas.webhook import create_order_event, WebhookEventType
+        platform = "mobile" if x_client_platform == "mobile" else "web"
         
-        order_event = create_order_event(
-            event_type=WebhookEventType.ORDER_COMPLETED,
-            order_id=payment_result["order_id"],
-            order_number=payment_result["order_number"],
-            user_id=current_user.id,
-            total_amount=payment_result["amount"],
-            status="completed"
-        )
+        if order_data.payment_method == "paypal":
+            # Create order and PayPal payment
+            try:
+                logger.info(f"[ORDER] Creating PayPal payment for user {user_id}")
+                payment_result = await payment_service.create_order_payment_from_cart(
+                    db, user_id, platform=platform, payment_method="paypal"
+                )
+                
+                if not payment_result:
+                    logger.error(f"[ORDER] PayPal payment creation failed for user {user_id}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail="PayPal payment gateway is temporarily unavailable. Please try again later or use another payment method."
+                    )
+                
+                logger.info(f"[ORDER] Successfully created PayPal order {payment_result['order_number']} for user {user_id}")
+                
+                return {
+                    "order_id": payment_result["order_id"],
+                    "order_number": payment_result["order_number"],
+                    "approval_url": payment_result["approval_url"],
+                    "amount": payment_result["amount"],
+                    "payment_method": "paypal",
+                    "status": payment_result.get("status", "pending")
+                }
+            
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"[ORDER] PayPal order creation error for user {user_id}: {e}", exc_info=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to create PayPal payment. Please try again or use another payment method."
+                )
         
-        # Notify user
-        await connection_manager.send_to_client(order_event.model_dump(mode='json'), "user", current_user.id)
+        elif order_data.payment_method == "balance":
+            # Check balance first
+            from app.services.user_service import user_service
+            user = await user_service.get_by_id(db, user_id)
+            if not user:
+                logger.error(f"[ORDER] User {user_id} not found")
+                raise HTTPException(status_code=404, detail="User not found")
+            
+            # Calculate cart total
+            cart_total = sum(float(item.product.price) * item.quantity for item in cart.items if item.product)
+            user_balance = float(user.balance)  # Convert Decimal to float
+            
+            if user_balance < cart_total:
+                logger.warning(f"[ORDER] User {user_id} has insufficient balance: {user_balance} < {cart_total}")
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "insufficient_balance",
+                        "message": f"Insufficient balance. You have ${user_balance:.2f}, but need ${cart_total:.2f}",
+                        "current_balance": user_balance,
+                        "required_amount": cart_total,
+                        "shortfall": cart_total - user_balance
+                    }
+                )
+            
+            # Create order and pay with balance
+            try:
+                logger.info(f"[ORDER] Creating balance payment for user {user_id}")
+                payment_result = await payment_service.create_order_payment_from_cart(
+                    db, user_id, platform=platform, payment_method="balance"
+                )
+                
+                if not payment_result:
+                    logger.error(f"[ORDER] Balance payment creation failed for user {user_id}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to process payment with balance. Please try again."
+                    )
+                
+                # TODO: Send WebSocket notification for completed order
+                # Currently disabled due to schema mismatch
+                # from app.core.websocket import connection_manager
+                # from app.schemas.webhook import create_order_event, WebhookEventType
+                
+                logger.info(f"[ORDER] Successfully created and completed balance order {payment_result['order_number']} for user {user_id}")
+                
+                # Get updated user balance
+                await db.refresh(user)
+                
+                return {
+                    "order_id": payment_result["order_id"],
+                    "order_number": payment_result["order_number"],
+                    "amount": payment_result["amount"],
+                    "payment_method": "balance",
+                    "status": "completed",
+                    "message": "Order paid successfully with your balance",
+                    "new_balance": float(user.balance)
+                }
+            
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"[ORDER] Balance payment error for user {user_id}: {e}", exc_info=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to process payment with balance. Please try again."
+                )
         
-        # Notify shops (get order to see items)
-        from app.services.order_service import order_service
-        order = await order_service.get_order_by_id(db, payment_result["order_id"])
-        if order:
-            notified_shops = set()
-            for item in order.items:
-                if item.shop_id not in notified_shops:
-                    await connection_manager.send_to_client(order_event.model_dump(mode='json'), "shop", item.shop_id)
-                    notified_shops.add(item.shop_id)
-        
-        # Notify admins
-        await connection_manager.broadcast_to_type(order_event.model_dump(mode='json'), "admin")
-        
-        logger.info(f"[ORDER] Created and completed order {payment_result['order_number']} with balance for user {current_user.id}")
-        
-        return {
-            "order_id": payment_result["order_id"],
-            "order_number": payment_result["order_number"],
-            "amount": payment_result["amount"],
-            "payment_method": "balance",
-            "status": "completed",
-            "message": "Order paid successfully with your balance"
-        }
+        else:
+            logger.warning(f"[ORDER] Invalid payment method '{order_data.payment_method}' from user {user_id}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid payment method: {order_data.payment_method}. Supported methods: paypal, balance"
+            )
     
-    else:
-        raise HTTPException(status_code=400, detail="Invalid payment method")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[ORDER] Unexpected error in create_order_from_cart for user {user_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while creating your order. Please try again later."
+        )
 
 
 @router.get("/{order_id}", response_model=OrderResponse)
@@ -125,7 +179,8 @@ async def get_order(
     db: AsyncSession = Depends(get_db)
 ):
     """Get order details by ID (Flutter mobile app)"""
-    order = await order_service.get_order_by_id(db, order_id, current_user.id)
+    user_id = current_user.id
+    order = await order_service.get_order_by_id(db, order_id, user_id)
     
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -180,7 +235,7 @@ async def get_user_orders(
             )
     
     orders, total = await order_service.get_user_orders(
-        db, current_user.id, skip, limit, status_enum
+        db, user_id, skip, limit, status_enum
     )
     
     # Build response with details
@@ -231,7 +286,8 @@ async def cancel_order(
     Only PENDING orders can be cancelled
     Refunds amount to user balance
     """
-    order = await order_service.get_order_by_id(db, order_id, current_user.id)
+    user_id = current_user.id
+    order = await order_service.get_order_by_id(db, order_id, user_id)
     
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -242,7 +298,7 @@ async def cancel_order(
         raise HTTPException(status_code=400, detail=error)
     
     # Cancel order
-    success, error = await order_service.cancel_order(db, order, current_user.id)
+    success, error = await order_service.cancel_order(db, order, user_id)
     
     if not success:
         raise HTTPException(status_code=400, detail=error)
@@ -256,11 +312,11 @@ async def cancel_order(
         event_type=WebhookEventType.ORDER_CANCELLED,
         order_id=order.id,
         order_number=order.order_number,
-        user_id=current_user.id,
+        user_id=user_id,
         total_amount=float(order.total_amount),
         status="cancelled"
     )
-    await connection_manager.send_to_client(order_event.model_dump(mode='json'), "user", current_user.id)
+    await connection_manager.send_to_client(order_event.model_dump(mode='json'), "user", user_id)
     
     # Notify shops (for each item)
     notified_shops = set()
@@ -272,7 +328,7 @@ async def cancel_order(
     # Notify admins
     await connection_manager.broadcast_to_type(order_event.model_dump(mode='json'), "admin")
     
-    logger.info(f"[ORDER] Order {order.order_number} cancelled by user {current_user.id}")
+    logger.info(f"[ORDER] Order {order.order_number} cancelled by user {user_id}")
     
     return {
         "message": "Order cancelled successfully",
@@ -300,13 +356,14 @@ async def request_order_refund(
             detail="Please provide a detailed reason (at least 10 characters)"
         )
     
-    order = await order_service.get_order_by_id(db, order_id, current_user.id)
+    user_id = current_user.id
+    order = await order_service.get_order_by_id(db, order_id, user_id)
     
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
     # Request refund
-    success, error = await order_service.request_refund(db, order, current_user.id, reason)
+    success, error = await order_service.request_refund(db, order, user_id, reason)
     
     if not success:
         raise HTTPException(status_code=400, detail=error)
@@ -328,19 +385,19 @@ async def request_order_refund(
             refund_id=refund.id,
             order_id=order.id,
             order_number=order.order_number,
-            user_id=current_user.id,
+            user_id=user_id,
             amount=float(order.total_amount),
             reason=reason,
             status="requested"
         )
         
         # Notify user
-        await connection_manager.send_to_client(refund_event.model_dump(mode='json'), "user", current_user.id)
+        await connection_manager.send_to_client(refund_event.model_dump(mode='json'), "user", user_id)
         
         # Notify admins
         await connection_manager.broadcast_to_type(refund_event.model_dump(mode='json'), "admin")
     
-    logger.info(f"[REFUND] Refund requested for order {order.order_number} by user {current_user.id}")
+    logger.info(f"[REFUND] Refund requested for order {order.order_number} by user {user_id}")
     
     return {
         "message": "Refund request submitted successfully",
