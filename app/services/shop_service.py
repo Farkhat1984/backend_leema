@@ -158,5 +158,110 @@ class ShopService:
         logger.info(f"Added {amount} to shop {shop_id} balance. New balance: {shop.balance}")
         return True
 
+    @staticmethod
+    async def get_shops_list(
+        db: AsyncSession,
+        skip: int = 0,
+        limit: int = 50,
+        query: Optional[str] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc"
+    ):
+        """Get list of approved shops with active products"""
+        from sqlalchemy import or_, desc, asc, case
+        
+        # Subquery to count active products per shop
+        products_count_subquery = (
+            select(
+                Product.shop_id,
+                func.count(Product.id).label("products_count")
+            )
+            .where(Product.is_active == True)
+            .group_by(Product.shop_id)
+            .subquery()
+        )
+        
+        # Main query
+        shops_query = (
+            select(
+                Shop,
+                func.coalesce(products_count_subquery.c.products_count, 0).label("products_count")
+            )
+            .outerjoin(products_count_subquery, Shop.id == products_count_subquery.c.shop_id)
+            .where(Shop.is_approved == True)
+        )
+        
+        # Filter: only shops with active products
+        shops_query = shops_query.where(
+            func.coalesce(products_count_subquery.c.products_count, 0) > 0
+        )
+        
+        # Search filter
+        if query:
+            shops_query = shops_query.where(
+                or_(
+                    Shop.shop_name.ilike(f"%{query}%"),
+                    Shop.description.ilike(f"%{query}%")
+                )
+            )
+        
+        # Sorting
+        sort_column = products_count_subquery.c.products_count
+        if sort_by == "created_at":
+            sort_column = Shop.created_at
+        elif sort_by == "shop_name":
+            sort_column = Shop.shop_name
+        elif sort_by == "products_count":
+            sort_column = func.coalesce(products_count_subquery.c.products_count, 0)
+        
+        if sort_order == "asc":
+            shops_query = shops_query.order_by(asc(sort_column))
+        else:
+            shops_query = shops_query.order_by(desc(sort_column))
+        
+        # Count total
+        count_query = (
+            select(func.count(Shop.id.distinct()))
+            .select_from(Shop)
+            .outerjoin(products_count_subquery, Shop.id == products_count_subquery.c.shop_id)
+            .where(Shop.is_approved == True)
+            .where(func.coalesce(products_count_subquery.c.products_count, 0) > 0)
+        )
+        
+        if query:
+            count_query = count_query.where(
+                or_(
+                    Shop.shop_name.ilike(f"%{query}%"),
+                    Shop.description.ilike(f"%{query}%")
+                )
+            )
+        
+        total_result = await db.execute(count_query)
+        total = total_result.scalar() or 0
+        
+        # Pagination
+        shops_query = shops_query.offset(skip).limit(limit)
+        
+        # Execute
+        result = await db.execute(shops_query)
+        rows = result.all()
+        
+        # Build response
+        shops_with_count = []
+        for shop, products_count in rows:
+            shop_dict = {
+                "id": shop.id,
+                "shop_name": shop.shop_name,
+                "description": shop.description,
+                "avatar_url": shop.avatar_url,
+                "logo_url": shop.avatar_url,  # Alias
+                "products_count": products_count,
+                "is_approved": shop.is_approved,
+                "created_at": shop.created_at
+            }
+            shops_with_count.append(shop_dict)
+        
+        return shops_with_count, total
+
 
 shop_service = ShopService()

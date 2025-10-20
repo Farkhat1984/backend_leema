@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 
 class ShopBase(BaseModel):
@@ -40,3 +40,23 @@ class ShopResponse(ShopBase):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ShopListItem(BaseModel):
+    id: int
+    shop_name: str
+    description: Optional[str] = None
+    logo_url: Optional[str] = None  # Alias for avatar_url
+    avatar_url: Optional[str] = None
+    products_count: int = 0
+    is_approved: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ShopList(BaseModel):
+    shops: List[ShopListItem]
+    total: int
+    page: int = 1
+    page_size: int = 50

@@ -4,12 +4,38 @@ from app.database import get_db
 from app.api.deps import get_current_shop
 from app.models.shop import Shop
 from app.services.shop_service import shop_service
-from app.schemas.shop import ShopResponse, ShopUpdate, ShopAnalytics
+from app.schemas.shop import ShopResponse, ShopUpdate, ShopAnalytics, ShopList
 from app.schemas.product import ProductResponse
 from app.schemas.transaction import TransactionResponse
 from typing import List
 
 router = APIRouter()
+
+
+@router.get("/", response_model=ShopList)
+async def get_shops(
+    skip: int = 0,
+    limit: int = 50,
+    query: str = None,
+    sort_by: str = "created_at",  # created_at, shop_name, products_count
+    sort_order: str = "desc",  # asc, desc
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get list of approved shops with active products
+    - query: search by shop name or description
+    - sort_by: created_at, shop_name, products_count
+    - sort_order: asc or desc
+    """
+    shops, total = await shop_service.get_shops_list(
+        db, skip, limit, query, sort_by, sort_order
+    )
+    return ShopList(
+        shops=shops,
+        total=total,
+        page=skip // limit + 1 if limit > 0 else 1,
+        page_size=limit
+    )
 
 
 @router.get("/me", response_model=ShopResponse)
