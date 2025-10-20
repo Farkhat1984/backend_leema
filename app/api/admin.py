@@ -26,7 +26,9 @@ from app.schemas.admin import (
     RefundAction,
     RefundResponse,
     BulkProductAction,
-    BulkShopAction
+    BulkShopAction,
+    ShopApprovalAction,
+    ShopRejectionAction
 )
 from app.schemas.product import ProductResponse
 from app.schemas.order import OrderResponse, OrderItemResponse
@@ -1273,8 +1275,18 @@ async def bulk_shop_action(
     admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """Perform bulk actions on shops"""
+    """
+    Perform bulk actions on shops
+    - approve: Activates shop (sets is_active=True). For already approved shops, this reactivates them.
+    - block: Deactivates shop (sets is_active=False). Shop remains approved but becomes inactive.
+    """
+    from app.core.websocket import connection_manager
+    from app.schemas.webhook import create_shop_event, WebhookEventType
+    from app.schemas.shop import ShopListItem
+    from app.models.product import Product
+    import logging
     
+    logger = logging.getLogger(__name__)
     success = []
     failed = []
     
@@ -1287,15 +1299,62 @@ async def bulk_shop_action(
                 failed.append({"shop_id": shop_id, "error": "Shop not found"})
                 continue
             
+            old_is_active = shop.is_active
+            
             if bulk_action.action == "approve":
-                shop.is_approved = True
+                # Activate shop (for already approved shops, this is reactivation)
+                shop.is_active = True
+                # Also mark as approved if not already
+                if not shop.is_approved:
+                    shop.is_approved = True
             elif bulk_action.action == "block":
-                shop.is_approved = False
+                # Deactivate shop (keeps is_approved=True)
+                shop.is_active = False
             
             await db.commit()
             success.append(shop_id)
             
+            # Send WebSocket event if status changed
+            if old_is_active != shop.is_active:
+                # Get products count
+                products_count_result = await db.execute(
+                    select(func.count(Product.id)).where(
+                        Product.shop_id == shop.id,
+                        Product.is_active == True
+                    )
+                )
+                products_count = products_count_result.scalar() or 0
+                
+                # Prepare shop data for event
+                shop_dict = ShopListItem(
+                    id=shop.id,
+                    shop_name=shop.shop_name,
+                    description=shop.description,
+                    avatar_url=shop.avatar_url,
+                    logo_url=shop.avatar_url,
+                    products_count=products_count,
+                    is_approved=shop.is_approved,
+                    is_active=shop.is_active,
+                    created_at=shop.created_at
+                ).model_dump(mode='json')
+                
+                shop_event = create_shop_event(
+                    event_type=WebhookEventType.SHOP_UPDATED,
+                    shop_id=shop.id,
+                    shop_name=shop.shop_name,
+                    owner_name=shop.owner_name,
+                    action="status_changed",
+                    is_approved=shop.is_approved,
+                    is_active=shop.is_active,
+                    shop=shop_dict
+                )
+                
+                # Broadcast to all users (mobile apps)
+                logger.info(f"🔔 Broadcasting shop status change: {shop.shop_name} (is_active={shop.is_active})")
+                await connection_manager.broadcast_to_type(shop_event.model_dump(mode='json'), "user")
+            
         except Exception as e:
+            logger.error(f"Error in shop bulk action for shop_id={shop_id}: {str(e)}")
             failed.append({"shop_id": shop_id, "error": str(e)})
     
     return {
@@ -1322,3 +1381,255 @@ async def delete_product(
     await db.commit()
     
     return {"message": "Product deleted successfully"}
+
+
+# === SHOP MANAGEMENT ENDPOINTS ===
+
+@router.get("/shops/pending")
+async def get_pending_shops(
+    page: int = 1,
+    per_page: int = 50,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get shops pending approval"""
+    from app.services.shop_service import shop_service
+    from app.schemas.shop import ShopResponse
+    
+    # Build query for pending shops
+    query = select(Shop).where(Shop.is_approved == False).order_by(Shop.created_at.desc())
+    
+    # Count total
+    count_query = select(func.count()).select_from(Shop).where(Shop.is_approved == False)
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+    
+    # Apply pagination
+    offset = (page - 1) * per_page
+    query = query.offset(offset).limit(per_page)
+    
+    # Execute query
+    result = await db.execute(query)
+    shops = result.scalars().all()
+    
+    # Get product counts for each shop
+    shop_list = []
+    for shop in shops:
+        # Count products
+        total_products_result = await db.execute(
+            select(func.count()).select_from(Product).where(Product.shop_id == shop.id)
+        )
+        total_products = total_products_result.scalar()
+        
+        shop_dict = {
+            "id": shop.id,
+            "shop_name": shop.shop_name,
+            "owner_name": shop.owner_name,
+            "email": shop.email,
+            "description": shop.description,
+            "avatar_url": shop.avatar_url,
+            "phone": shop.phone,
+            "address": shop.address,
+            "balance": float(shop.balance),
+            "is_approved": shop.is_approved,
+            "is_active": shop.is_active,
+            "rejection_reason": shop.rejection_reason,
+            "total_products": total_products,
+            "created_at": shop.created_at.isoformat(),
+            "updated_at": shop.updated_at.isoformat()
+        }
+        shop_list.append(shop_dict)
+    
+    return {
+        "shops": shop_list,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": (total + per_page - 1) // per_page
+    }
+
+
+@router.post("/shops/{shop_id}/approve")
+async def approve_shop(
+    shop_id: int,
+    action: ShopApprovalAction,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Approve shop - allows them to create products"""
+    from app.services.shop_service import shop_service
+    from app.schemas.shop import ShopListItem
+    
+    shop = await shop_service.approve_shop(db, shop_id, admin.id, action.notes)
+    
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    
+    # Send WebSocket event to shop
+    from app.core.websocket import connection_manager
+    from app.schemas.webhook import create_shop_event, WebhookEventType
+    
+    # Get products count
+    products_count_result = await db.execute(
+        select(func.count(Product.id)).where(
+            Product.shop_id == shop.id,
+            Product.is_active == True
+        )
+    )
+    products_count = products_count_result.scalar() or 0
+    
+    # Prepare shop data for event
+    shop_dict = ShopListItem(
+        id=shop.id,
+        shop_name=shop.shop_name,
+        description=shop.description,
+        avatar_url=shop.avatar_url,
+        logo_url=shop.avatar_url,
+        phone=shop.phone,
+        address=shop.address,
+        products_count=products_count,
+        is_approved=shop.is_approved,
+        is_active=shop.is_active,
+        created_at=shop.created_at
+    ).model_dump(mode='json')
+    
+    shop_event = create_shop_event(
+        event_type=WebhookEventType.SHOP_APPROVED,
+        shop_id=shop.id,
+        shop_name=shop.shop_name,
+        owner_name=shop.owner_name,
+        action="approved",
+        is_approved=True,
+        is_active=shop.is_active,
+        shop=shop_dict
+    )
+    
+    # Send to specific shop
+    await connection_manager.send_to_client(shop_event.model_dump(mode='json'), "shop", shop.id)
+    
+    # Broadcast to all users (mobile apps need to see new shops)
+    await connection_manager.broadcast_to_type(shop_event.model_dump(mode='json'), "user")
+    
+    logger.info(f"✅ Shop approved by admin: {shop.shop_name}")
+    
+    # Send email notification (non-critical)
+    try:
+        from app.core.email import email_service
+        await email_service.send_shop_approved_notification(
+            shop.email,
+            shop.shop_name,
+            shop.owner_name
+        )
+    except Exception as email_error:
+        logger.warning(f"Failed to send approval email for shop {shop_id}: {email_error}")
+    
+    return {
+        "message": "Shop approved successfully",
+        "shop_id": shop.id,
+        "shop_name": shop.shop_name
+    }
+
+
+@router.post("/shops/{shop_id}/reject")
+async def reject_shop(
+    shop_id: int,
+    action: ShopRejectionAction,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Reject shop registration with reason"""
+    from app.services.shop_service import shop_service
+    
+    shop = await shop_service.reject_shop(db, shop_id, admin.id, action.reason)
+    
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    
+    # Send WebSocket event to shop
+    from app.core.websocket import connection_manager
+    from app.schemas.webhook import create_shop_event, WebhookEventType
+    
+    shop_event = create_shop_event(
+        event_type=WebhookEventType.SHOP_REJECTED,
+        shop_id=shop.id,
+        shop_name=shop.shop_name,
+        owner_name=shop.owner_name,
+        action="rejected",
+        is_approved=False,
+        is_active=shop.is_active,
+        shop=None,
+        rejection_reason=action.reason
+    )
+    
+    # Send to specific shop
+    await connection_manager.send_to_client(shop_event.model_dump(mode='json'), "shop", shop.id)
+    
+    logger.info(f"❌ Shop rejected by admin: {shop.shop_name}")
+    
+    # Send email notification (non-critical)
+    try:
+        from app.core.email import email_service
+        await email_service.send_shop_rejected_notification(
+            shop.email,
+            shop.shop_name,
+            shop.owner_name,
+            action.reason
+        )
+    except Exception as email_error:
+        logger.warning(f"Failed to send rejection email for shop {shop_id}: {email_error}")
+    
+    return {
+        "message": "Shop rejected successfully",
+        "shop_id": shop.id,
+        "shop_name": shop.shop_name,
+        "reason": action.reason
+    }
+
+
+@router.delete("/shops/{shop_id}")
+async def delete_shop_admin(
+    shop_id: int,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete shop and all associated data (admin only)"""
+    from app.services.shop_service import shop_service
+    from app.core.websocket import connection_manager
+    from app.schemas.webhook import create_shop_event, WebhookEventType
+    
+    # Get shop info before deletion
+    shop = await shop_service.get_by_id(db, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    
+    shop_name = shop.shop_name
+    owner_name = shop.owner_name
+    
+    # Delete shop
+    success = await shop_service.delete_shop(db, shop_id)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete shop")
+    
+    # Send WebSocket event
+    shop_event = create_shop_event(
+        event_type=WebhookEventType.SHOP_DELETED,
+        shop_id=shop_id,
+        shop_name=shop_name,
+        owner_name=owner_name,
+        action="deleted",
+        is_approved=False,
+        is_active=False,
+        shop=None
+    )
+    
+    # Broadcast to all users
+    await connection_manager.broadcast_to_type(shop_event.model_dump(mode='json'), "user")
+    
+    logger.info(f"🗑️ Shop deleted by admin: {shop_name}")
+    
+    return {
+        "message": "Shop deleted successfully",
+        "shop_id": shop_id,
+        "shop_name": shop_name
+    }

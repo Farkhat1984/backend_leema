@@ -375,13 +375,24 @@ async def delete_product(
     db: AsyncSession = Depends(get_db)
 ):
     """Delete product (shop only) - synchronizes with admin panel"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     product = await product_service.get_by_id(db, product_id)
     if not product or product.shop_id != current_shop.id:
         raise HTTPException(status_code=404, detail="Product not found")
 
     product_name = product.name
     was_pending = product.moderation_status.value == "pending"
-    await product_service.delete(db, product_id)
+    
+    try:
+        await product_service.delete(db, product_id)
+    except Exception as e:
+        logger.error(f"Error deleting product {product_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete product: {str(e)}"
+        )
 
     # Send webhook to ALL shops (mobile apps need to know about deletions)
     product_event = create_product_event(
@@ -392,8 +403,6 @@ async def delete_product(
         action="deleted"
     )
     
-    import logging
-    logger = logging.getLogger(__name__)
     logger.info(f"🔔 Broadcasting product.deleted event to ALL shops and admins")
     await connection_manager.broadcast_to_type(product_event.model_dump(mode='json'), "shop")
     await connection_manager.broadcast_to_type(product_event.model_dump(mode='json'), "admin")

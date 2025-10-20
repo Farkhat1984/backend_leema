@@ -79,15 +79,32 @@ class ProductService:
 
     @staticmethod
     async def delete(db: AsyncSession, product_id: int) -> bool:
-        """Delete product (hard delete - remove from database)"""
+        """Delete product (soft delete if has orders, hard delete otherwise)"""
+        from app.models.order import OrderItem
+        
         product = await ProductService.get_by_id(db, product_id)
         if not product:
             return False
 
-        # Delete from database permanently
-        await db.delete(product)
-        await db.commit()
-        logger.info(f"Product deleted permanently: {product_id}")
+        # Check if product has order items (already purchased)
+        order_items_result = await db.execute(
+            select(OrderItem).where(OrderItem.product_id == product_id).limit(1)
+        )
+        has_orders = order_items_result.scalar_one_or_none() is not None
+        
+        if has_orders:
+            # Soft delete: deactivate and mark as rejected
+            product.is_active = False
+            product.moderation_status = ModerationStatus.REJECTED
+            product.moderation_notes = "Удалено владельцем магазина"
+            await db.commit()
+            logger.info(f"Product soft-deleted (has orders): {product_id}")
+        else:
+            # Hard delete: remove from database permanently
+            await db.delete(product)
+            await db.commit()
+            logger.info(f"Product hard-deleted (no orders): {product_id}")
+        
         return True
 
     @staticmethod

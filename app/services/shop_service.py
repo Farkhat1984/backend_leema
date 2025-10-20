@@ -33,7 +33,7 @@ class ShopService:
 
     @staticmethod
     async def create(db: AsyncSession, shop_data: ShopCreate) -> Shop:
-        """Create new shop"""
+        """Create new shop - requires admin approval by default"""
         shop = Shop(
             google_id=shop_data.google_id,
             email=shop_data.email,
@@ -41,11 +41,14 @@ class ShopService:
             owner_name=shop_data.owner_name,
             description=shop_data.description,
             avatar_url=shop_data.avatar_url,
+            phone=shop_data.phone,
+            address=shop_data.address,
+            is_approved=False,  # Requires admin approval
         )
         db.add(shop)
         await db.commit()
         await db.refresh(shop)
-        logger.info(f"Shop created: {shop.shop_name}")
+        logger.info(f"Shop created (pending approval): {shop.shop_name}")
         return shop
 
     @staticmethod
@@ -61,6 +64,12 @@ class ShopService:
             shop.description = shop_data.description
         if shop_data.avatar_url is not None:
             shop.avatar_url = shop_data.avatar_url
+        if shop_data.phone is not None:
+            shop.phone = shop_data.phone
+        if shop_data.address is not None:
+            shop.address = shop_data.address
+        if shop_data.is_active is not None:
+            shop.is_active = shop_data.is_active
 
         await db.commit()
         await db.refresh(shop)
@@ -70,10 +79,10 @@ class ShopService:
     async def get_products(
         db: AsyncSession, shop_id: int, skip: int = 0, limit: int = 50
     ) -> List[Product]:
-        """Get shop products"""
+        """Get shop products (only active products)"""
         result = await db.execute(
             select(Product)
-            .where(Product.shop_id == shop_id)
+            .where(Product.shop_id == shop_id, Product.is_active == True)
             .order_by(Product.created_at.desc())
             .offset(skip)
             .limit(limit)
@@ -165,7 +174,8 @@ class ShopService:
         limit: int = 50,
         query: Optional[str] = None,
         sort_by: str = "created_at",
-        sort_order: str = "desc"
+        sort_order: str = "desc",
+        is_active: Optional[bool] = None
     ):
         """Get list of approved shops with active products"""
         from sqlalchemy import or_, desc, asc, case
@@ -190,6 +200,10 @@ class ShopService:
             .outerjoin(products_count_subquery, Shop.id == products_count_subquery.c.shop_id)
             .where(Shop.is_approved == True)
         )
+        
+        # Filter by is_active if provided
+        if is_active is not None:
+            shops_query = shops_query.where(Shop.is_active == is_active)
         
         # Filter: only shops with active products
         shops_query = shops_query.where(
@@ -228,6 +242,10 @@ class ShopService:
             .where(func.coalesce(products_count_subquery.c.products_count, 0) > 0)
         )
         
+        # Filter by is_active in count query
+        if is_active is not None:
+            count_query = count_query.where(Shop.is_active == is_active)
+        
         if query:
             count_query = count_query.where(
                 or_(
@@ -257,11 +275,70 @@ class ShopService:
                 "logo_url": shop.avatar_url,  # Alias
                 "products_count": products_count,
                 "is_approved": shop.is_approved,
+                "is_active": shop.is_active,
                 "created_at": shop.created_at
             }
             shops_with_count.append(shop_dict)
         
         return shops_with_count, total
+
+
+    @staticmethod
+    async def approve_shop(db: AsyncSession, shop_id: int, admin_id: int, notes: Optional[str] = None) -> Optional[Shop]:
+        """Approve shop - allow them to create products and activate the shop"""
+        shop = await ShopService.get_by_id(db, shop_id)
+        if not shop:
+            return None
+        
+        shop.is_approved = True
+        shop.is_active = True  # Activate shop when approved
+        shop.rejection_reason = None  # Clear any previous rejection
+        await db.commit()
+        await db.refresh(shop)
+        
+        logger.info(f"Shop {shop_id} approved and activated by admin {admin_id}")
+        return shop
+
+    @staticmethod
+    async def reject_shop(db: AsyncSession, shop_id: int, admin_id: int, reason: str) -> Optional[Shop]:
+        """Reject shop registration with reason"""
+        shop = await ShopService.get_by_id(db, shop_id)
+        if not shop:
+            return None
+        
+        shop.is_approved = False
+        shop.rejection_reason = reason
+        await db.commit()
+        await db.refresh(shop)
+        
+        logger.info(f"Shop {shop_id} rejected by admin {admin_id}: {reason}")
+        return shop
+
+    @staticmethod
+    async def delete_shop(db: AsyncSession, shop_id: int) -> bool:
+        """Delete shop and all associated products"""
+        shop = await ShopService.get_by_id(db, shop_id)
+        if not shop:
+            return False
+        
+        # Delete all products first
+        await db.execute(
+            select(Product).where(Product.shop_id == shop_id)
+        )
+        products_result = await db.execute(
+            select(Product).where(Product.shop_id == shop_id)
+        )
+        products = products_result.scalars().all()
+        
+        for product in products:
+            await db.delete(product)
+        
+        # Delete shop
+        await db.delete(shop)
+        await db.commit()
+        
+        logger.info(f"Shop {shop_id} deleted with {len(products)} products")
+        return True
 
 
 shop_service = ShopService()

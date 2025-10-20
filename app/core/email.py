@@ -142,5 +142,73 @@ class EmailService:
 
         return await self.send_email(to_email, subject, body, html=True)
 
+    async def send_shop_approved_notification(
+        self,
+        to_email: str,
+        shop_name: str,
+        owner_name: str
+    ) -> bool:
+        """Send notification about shop approval"""
+        subject = f"Shop Approved - {shop_name}"
+
+        html_template = Template("""
+        <html>
+            <body>
+                <h2>Hello {{ owner_name }},</h2>
+                <p>Congratulations! Your shop <strong>{{ shop_name }}</strong> has been approved!</p>
+                <p>You can now:</p>
+                <ul>
+                    <li>Create and manage products</li>
+                    <li>Receive orders from customers</li>
+                    <li>Access your shop dashboard</li>
+                </ul>
+                <p>Start adding your products and grow your business!</p>
+                <p>Best regards,<br>{{ app_name }} Team</p>
+            </body>
+        </html>
+        """)
+
+        body = html_template.render(
+            owner_name=owner_name,
+            shop_name=shop_name,
+            app_name=settings.APP_NAME
+        )
+
+        return await self.send_email(to_email, subject, body, html=True)
+
+    async def send_shop_rejected_notification(
+        self,
+        to_email: str,
+        shop_name: str,
+        owner_name: str,
+        reason: str
+    ) -> bool:
+        """Send notification about shop rejection"""
+        subject = f"Shop Registration - Action Required"
+
+        html_template = Template("""
+        <html>
+            <body>
+                <h2>Hello {{ owner_name }},</h2>
+                <p>Thank you for registering your shop <strong>{{ shop_name }}</strong>.</p>
+                <p>Unfortunately, we cannot approve your shop at this time.</p>
+                <p><strong>Reason:</strong></p>
+                <p>{{ reason }}</p>
+                <p>You can update your shop information and we will review it again.</p>
+                <p>If you have any questions, please contact our support team.</p>
+                <p>Best regards,<br>{{ app_name }} Team</p>
+            </body>
+        </html>
+        """)
+
+        body = html_template.render(
+            owner_name=owner_name,
+            shop_name=shop_name,
+            reason=reason,
+            app_name=settings.APP_NAME
+        )
+
+        return await self.send_email(to_email, subject, body, html=True)
+
 
 email_service = EmailService()

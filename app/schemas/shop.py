@@ -13,12 +13,18 @@ class ShopCreate(ShopBase):
     google_id: str
     description: Optional[str] = Field(None, max_length=1000)
     avatar_url: Optional[str] = None
+    phone: Optional[str] = Field(None, max_length=50)
+    address: Optional[str] = Field(None, max_length=500)
+    is_active: Optional[bool] = True
 
 
 class ShopUpdate(BaseModel):
     shop_name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = Field(None, max_length=1000)
     avatar_url: Optional[str] = None
+    phone: Optional[str] = Field(None, max_length=50)
+    address: Optional[str] = Field(None, max_length=500)
+    is_active: Optional[bool] = None
 
 
 class ShopAnalytics(BaseModel):
@@ -34,8 +40,12 @@ class ShopResponse(ShopBase):
     id: int
     description: Optional[str] = None
     avatar_url: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
     balance: float = 0
     is_approved: bool
+    is_active: bool
+    rejection_reason: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -48,8 +58,11 @@ class ShopListItem(BaseModel):
     description: Optional[str] = None
     logo_url: Optional[str] = None  # Alias for avatar_url
     avatar_url: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
     products_count: int = 0
     is_approved: bool
+    is_active: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}

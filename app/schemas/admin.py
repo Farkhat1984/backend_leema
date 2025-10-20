@@ -59,3 +59,11 @@ class BulkProductAction(BaseModel):
 class BulkShopAction(BaseModel):
     shop_ids: List[int]
     action: str = Field(..., pattern="^(approve|block)$")
+
+
+class ShopApprovalAction(BaseModel):
+    notes: Optional[str] = Field(None, max_length=1000)
+
+
+class ShopRejectionAction(BaseModel):
+    reason: str = Field(..., min_length=10, max_length=1000)

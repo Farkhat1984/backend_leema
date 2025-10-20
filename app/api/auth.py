@@ -15,7 +15,9 @@ from app.schemas.shop import ShopCreate, ShopResponse
 from app.config import settings
 from app.models.user import UserRole, User
 from app.api.deps import get_current_user
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -107,6 +109,8 @@ async def google_login(
     elif request.account_type == AccountType.SHOP:
         # Check if shop exists
         shop = await shop_service.get_by_google_id(db, user_info["google_id"])
+        is_new_shop = shop is None
+        
         if not shop:
             # Create new shop
             shop_data = ShopCreate(
@@ -117,6 +121,39 @@ async def google_login(
                 avatar_url=user_info.get("avatar_url")
             )
             shop = await shop_service.create(db, shop_data)
+            
+            # Send WebSocket event for new shop
+            from app.core.websocket import connection_manager
+            from app.schemas.webhook import create_shop_event, WebhookEventType
+            from app.schemas.shop import ShopListItem
+            
+            # Prepare shop data for event
+            shop_dict = ShopListItem(
+                id=shop.id,
+                shop_name=shop.shop_name,
+                description=shop.description,
+                avatar_url=shop.avatar_url,
+                logo_url=shop.avatar_url,
+                products_count=0,
+                is_approved=shop.is_approved,
+                is_active=shop.is_active,
+                created_at=shop.created_at
+            ).model_dump(mode='json')
+            
+            shop_event = create_shop_event(
+                event_type=WebhookEventType.SHOP_CREATED,
+                shop_id=shop.id,
+                shop_name=shop.shop_name,
+                owner_name=shop.owner_name,
+                action="created",
+                is_approved=shop.is_approved,
+                is_active=shop.is_active,
+                shop=shop_dict
+            )
+            
+            # Broadcast to all users (mobile apps)
+            await connection_manager.broadcast_to_type(shop_event.model_dump(mode='json'), "user")
+            logger.info(f"✅ Shop created event sent: {shop.shop_name}")
 
         # Create tokens with enhanced claims
         token_data = {

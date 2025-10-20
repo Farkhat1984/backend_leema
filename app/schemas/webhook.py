@@ -18,6 +18,13 @@ class WebhookEventType(str, Enum):
     PRODUCT_APPROVED = "product.approved"
     PRODUCT_REJECTED = "product.rejected"
 
+    # Shop events
+    SHOP_CREATED = "shop.created"
+    SHOP_UPDATED = "shop.updated"
+    SHOP_APPROVED = "shop.approved"
+    SHOP_REJECTED = "shop.rejected"
+    SHOP_DELETED = "shop.deleted"
+
     # Balance events
     BALANCE_UPDATED = "balance.updated"
 
@@ -84,6 +91,21 @@ class ProductEventData(BaseModel):
     is_active: Optional[bool] = None
     # Full product data for mobile apps
     product: Optional[Dict[str, Any]] = None
+
+
+# Shop Events
+
+class ShopEventData(BaseModel):
+    """Shop CRUD event data"""
+    shop_id: int
+    shop_name: str
+    owner_name: str
+    action: str  # created, updated, approved, rejected, deleted
+    is_approved: Optional[bool] = None
+    is_active: Optional[bool] = None
+    rejection_reason: Optional[str] = None
+    # Full shop data for mobile apps
+    shop: Optional[Dict[str, Any]] = None
 
 
 # Balance Events
@@ -214,6 +236,33 @@ def create_product_event(
             moderation_status=moderation_status,
             is_active=is_active,
             product=product
+        ).model_dump()
+    )
+
+
+def create_shop_event(
+    event_type: WebhookEventType,
+    shop_id: int,
+    shop_name: str,
+    owner_name: str,
+    action: str,
+    is_approved: Optional[bool] = None,
+    is_active: Optional[bool] = None,
+    shop: Optional[Dict[str, Any]] = None,
+    rejection_reason: Optional[str] = None
+) -> WebhookEvent:
+    """Create shop CRUD event"""
+    return WebhookEvent(
+        event=event_type,
+        data=ShopEventData(
+            shop_id=shop_id,
+            shop_name=shop_name,
+            owner_name=owner_name,
+            action=action,
+            is_approved=is_approved,
+            is_active=is_active,
+            shop=shop,
+            rejection_reason=rejection_reason
         ).model_dump()
     )
 
