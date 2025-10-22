@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from app.models.order import Order
     from app.models.review import Review
     from app.models.shop import Shop
+    from app.models.category import ProductCategory
 
 
 class ModerationStatus(str, enum.Enum):
@@ -27,6 +28,7 @@ class Product(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     shop_id: Mapped[int] = mapped_column(Integer, ForeignKey("shops.id"), nullable=False)
+    category_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("product_categories.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     characteristics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -48,6 +50,7 @@ class Product(Base):
 
     # Relationships
     shop: Mapped["Shop"] = relationship("Shop", back_populates="products")
+    category: Mapped["ProductCategory"] = relationship("ProductCategory", back_populates="products")
     generations: Mapped[list["Generation"]] = relationship("Generation", back_populates="product")
     moderation_queue: Mapped["ModerationQueue"] = relationship(
         "ModerationQueue", back_populates="product", uselist=False, cascade="all, delete-orphan"

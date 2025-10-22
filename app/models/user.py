@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from app.models.refund import Refund
     from app.models.transaction import Transaction
     from app.models.cart import Cart
+    from app.models.wardrobe import UserWardrobeItem
 
 
 class UserRole(str, enum.Enum):
@@ -46,6 +47,7 @@ class User(Base):
     refunds: Mapped[list["Refund"]] = relationship("Refund", back_populates="user")
     orders: Mapped[list["Order"]] = relationship("Order", back_populates="user")
     cart: Mapped["Cart"] = relationship("Cart", back_populates="user", uselist=False)
+    wardrobe_items: Mapped[list["UserWardrobeItem"]] = relationship("UserWardrobeItem", back_populates="user")
 
     def __repr__(self):
         return f"<User(id={self.id}, email={self.email}, role={self.role})>"

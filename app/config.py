@@ -13,10 +13,17 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://fashionuser:Ckdshfh231161@postgres:5432/fashion_platform"
+    DATABASE_URL: str = Field(
+        default="postgresql+asyncpg://fashionuser:password@postgres:5432/fashion_platform",
+        description="Database connection URL"
+    )
 
     # Security
-    SECRET_KEY: str = "your-secret-key-change-in-production"
+    SECRET_KEY: str = Field(
+        default="CHANGE-THIS-IN-PRODUCTION-USE-RANDOM-64-CHARS",
+        min_length=32,
+        description="Secret key for JWT tokens - MUST be changed in production"
+    )
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
