@@ -101,6 +101,16 @@ class ProductService:
             logger.info(f"Product soft-deleted (has orders): {product_id}")
         else:
             # Hard delete: remove from database permanently
+            # First, explicitly delete moderation queue entry if exists
+            moderation_result = await db.execute(
+                select(ModerationQueue).where(ModerationQueue.product_id == product_id)
+            )
+            moderation = moderation_result.scalar_one_or_none()
+            if moderation:
+                await db.delete(moderation)
+                logger.info(f"Deleted moderation queue entry for product {product_id}")
+            
+            # Now delete the product
             await db.delete(product)
             await db.commit()
             logger.info(f"Product hard-deleted (no orders): {product_id}")

@@ -314,11 +314,11 @@ async def reject_product(
     db: AsyncSession = Depends(get_db)
 ):
     """Reject product"""
-    if not action.notes:
-        raise HTTPException(status_code=400, detail="Notes required for rejection")
+    # Notes are optional for rejection
+    notes = action.notes if action.notes else "Отклонено администратором"
 
     try:
-        product = await product_service.reject_product(db, product_id, admin.id, action.notes)
+        product = await product_service.reject_product(db, product_id, admin.id, notes)
         if not product:
             raise HTTPException(status_code=404, detail="Product not found")
 

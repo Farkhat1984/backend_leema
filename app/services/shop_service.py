@@ -79,10 +79,10 @@ class ShopService:
     async def get_products(
         db: AsyncSession, shop_id: int, skip: int = 0, limit: int = 50
     ) -> List[Product]:
-        """Get shop products (only active products)"""
+        """Get shop products (all products, not just active)"""
         result = await db.execute(
             select(Product)
-            .where(Product.shop_id == shop_id, Product.is_active == True)
+            .where(Product.shop_id == shop_id)
             .order_by(Product.created_at.desc())
             .offset(skip)
             .limit(limit)

@@ -378,17 +378,28 @@ async def delete_product(
     import logging
     logger = logging.getLogger(__name__)
     
+    logger.info(f"[DELETE] Shop {current_shop.id} attempting to delete product {product_id}")
+    
     product = await product_service.get_by_id(db, product_id)
-    if not product or product.shop_id != current_shop.id:
+    if not product:
+        logger.warning(f"[DELETE] Product {product_id} not found")
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    if product.shop_id != current_shop.id:
+        logger.warning(f"[DELETE] Shop {current_shop.id} does not own product {product_id} (owned by shop {product.shop_id})")
         raise HTTPException(status_code=404, detail="Product not found")
 
     product_name = product.name
-    was_pending = product.moderation_status.value == "pending"
+    product_status = product.moderation_status.value if hasattr(product.moderation_status, 'value') else str(product.moderation_status)
+    was_pending = product_status == "pending"
+    
+    logger.info(f"[DELETE] Product {product_id} status: {product_status}, was_pending: {was_pending}")
     
     try:
         await product_service.delete(db, product_id)
+        logger.info(f"[DELETE] Successfully deleted product {product_id}")
     except Exception as e:
-        logger.error(f"Error deleting product {product_id}: {str(e)}")
+        logger.error(f"[DELETE] Error deleting product {product_id}: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to delete product: {str(e)}"
