@@ -45,25 +45,29 @@ class GenerationService:
         user_id: int,
         product_id: int,
         user_image_url: str,
-        cost: float = 0.0
-    ) -> Optional[Generation]:
-        """Try on product for user (charging handled by caller)"""
+        cost: float = 0.0,
+        save_to_wardrobe: bool = False
+    ) -> tuple[Optional[Generation], Optional[int]]:
+        """
+        Try on product for user (charging handled by caller)
+        Returns (generation, wardrobe_item_id)
+        """
         product = await product_service.get_by_id(db, product_id)
         if not product or not product.is_active:
             logger.warning(f"Product {product_id} not found or inactive")
-            return None
+            return None, None
 
         # Get product image
         product_image_url = product.images[0] if product.images else None
         if not product_image_url:
             logger.error(f"Product {product_id} has no images")
-            return None
+            return None, None
 
         # Generate try-on image using Gemini
         image_url = await gemini_ai.try_on_fashion(product_image_url, user_image_url)
         if not image_url:
             logger.error(f"Failed to generate try-on for user {user_id}")
-            return None
+            return None, None
 
         # Create generation record
         generation = Generation(
@@ -81,7 +85,33 @@ class GenerationService:
         await db.commit()
         await db.refresh(generation)
         logger.info(f"Try-on generated for user {user_id}, product {product_id}, cost: {cost}")
-        return generation
+
+        # Save to wardrobe if requested
+        wardrobe_item_id = None
+        if save_to_wardrobe:
+            try:
+                from app.services.wardrobe_service import wardrobe_service
+                from app.schemas.wardrobe import WardrobeItemFromGeneration
+                
+                # Check wardrobe limit before creating
+                can_add, current_count = await wardrobe_service.check_wardrobe_limit(db, user_id)
+                if can_add:
+                    custom_data = WardrobeItemFromGeneration(
+                        name=f"Try-on: {product.name}",
+                        is_favorite=False
+                    )
+                    wardrobe_item = await wardrobe_service.create_from_generation(
+                        db, user_id, generation.id, custom_data
+                    )
+                    wardrobe_item_id = wardrobe_item.id
+                    logger.info(f"Generation {generation.id} saved to wardrobe: {wardrobe_item_id}")
+                else:
+                    logger.warning(f"User {user_id} wardrobe limit reached ({current_count}/500), skipping save")
+            except Exception as e:
+                logger.error(f"Failed to save generation to wardrobe: {e}")
+                # Don't fail the whole operation if wardrobe save fails
+
+        return generation, wardrobe_item_id
 
     @staticmethod
     async def apply_clothing_to_model(

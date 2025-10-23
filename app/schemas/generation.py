@@ -33,6 +33,10 @@ class TryOnRequest(CamelModel):
         min_length=1,
         validation_alias=AliasChoices("user_image_url", "userImageUrl")
     )  # URL загруженного фото пользователя
+    save_to_wardrobe: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("save_to_wardrobe", "saveToWardrobe")
+    )  # Auto-save to wardrobe after generation
 
 
 class ApplyClothingRequest(CamelModel):
@@ -128,5 +132,6 @@ class GenerationResponse(GenerationBase):
     image_url: Optional[str] = None
     created_at: datetime
     charge_info: Optional[dict] = None  # Information about charge
+    wardrobe_item_id: Optional[int] = None  # ID of created wardrobe item if saved
 
     model_config = {"from_attributes": True}

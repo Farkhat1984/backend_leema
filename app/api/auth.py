@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.core.google_auth import google_auth
-from app.core.security import create_access_token, create_refresh_token, verify_token
+from app.core.security import create_access_token, create_refresh_token, verify_token, verify_token_async
 from app.services.user_service import user_service
 from app.services.shop_service import shop_service
 from app.schemas.auth import (
@@ -15,6 +15,7 @@ from app.schemas.shop import ShopCreate, ShopResponse
 from app.config import settings
 from app.models.user import UserRole, User
 from app.api.deps import get_current_user
+from app.core.redis import redis_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -185,12 +186,13 @@ async def refresh_access_token(
     request: RefreshTokenRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """Refresh access token using refresh token"""
-    payload = verify_token(request.refresh_token, "refresh")
+    """Refresh access token using refresh token (checks blacklist)"""
+    # Use async verification to check blacklist
+    payload = await verify_token_async(request.refresh_token, "refresh")
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token"
+            detail="Invalid or blacklisted refresh token"
         )
 
     # Create new access token with same payload
@@ -210,19 +212,28 @@ async def logout(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Logout user/shop by invalidating refresh token
-    Note: In production, implement token blacklist (Redis recommended)
-    For now, we just verify the token is valid
+    Logout user/shop by invalidating refresh token.
+    Adds token to blacklist (Redis) to prevent reuse.
     """
-    payload = verify_token(request.refresh_token, "refresh")
+    # Use async verification to check token validity
+    payload = await verify_token_async(request.refresh_token, "refresh")
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token"
+            detail="Invalid or already blacklisted refresh token"
         )
     
-    # TODO: Add token to blacklist (Redis implementation)
-    # await redis_client.setex(f"blacklist:{request.refresh_token}", settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400, "1")
+    # Add token to blacklist with TTL = token expiry
+    expiry_seconds = settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
+    blacklisted = await redis_client.blacklist_token(
+        request.refresh_token,
+        expiry_seconds
+    )
+    
+    if blacklisted:
+        logger.info(f"Token blacklisted successfully")
+    else:
+        logger.warning("Redis unavailable - token not blacklisted (still expires naturally)")
     
     return {"message": "Successfully logged out"}
 

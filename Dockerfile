@@ -22,13 +22,14 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy dependency files
 COPY pyproject.toml .
-COPY requirements.txt .
 
 # Install dependencies in a virtual environment
 RUN uv venv /opt/venv
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-RUN uv pip install -r requirements.txt
+
+# Install ALL dependencies from pyproject.toml
+RUN uv pip install -r pyproject.toml
 
 # Stage 2: Runtime stage
 FROM python:3.13-slim

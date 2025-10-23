@@ -12,49 +12,49 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     API_V1_PREFIX: str = "/api/v1"
 
-    # Database
+    # Database - REQUIRED from environment
     DATABASE_URL: str = Field(
-        default="postgresql+asyncpg://fashionuser:password@postgres:5432/fashion_platform",
-        description="Database connection URL"
+        ...,  # No default - must be provided via environment variable
+        description="Database connection URL (REQUIRED)"
     )
 
-    # Security
+    # Security - REQUIRED from environment
     SECRET_KEY: str = Field(
-        default="CHANGE-THIS-IN-PRODUCTION-USE-RANDOM-64-CHARS",
-        min_length=32,
-        description="Secret key for JWT tokens - MUST be changed in production"
+        ...,  # No default - must be provided via environment variable
+        min_length=64,  # Increased from 32 to 64 for better security
+        description="Secret key for JWT tokens (REQUIRED - minimum 64 characters)"
     )
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # Google OAuth
-    GOOGLE_CLIENT_ID: str = ""
-    GOOGLE_CLIENT_SECRET: str = ""
+    # Google OAuth - REQUIRED from environment
+    GOOGLE_CLIENT_ID: str = Field(..., description="Google OAuth Client ID (REQUIRED)")
+    GOOGLE_CLIENT_SECRET: str = Field(..., description="Google OAuth Client Secret (REQUIRED)")
     GOOGLE_REDIRECT_URI: str = "https://www.leema.kz/public/auth/callback.html"
     
-    # Firebase (for mobile apps)
-    FIREBASE_WEB_API: str = ""  # Firebase Web API Key for mobile authentication
-    GOOGLE_MOBILE_CLIENT_ID: str = ""  # Web client ID for mobile apps (from Firebase)
-    GOOGLE_MOBILE_CLIENT_SECRET: str = ""  # Web client secret (optional, for mobile OAuth flow)
-    GOOGLE_ANDROID_CLIENT_ID: str = ""  # Android client ID for mobile apps
+    # Firebase (for mobile apps) - REQUIRED from environment
+    FIREBASE_WEB_API: str = Field(..., description="Firebase Web API Key (REQUIRED)")
+    GOOGLE_MOBILE_CLIENT_ID: str = Field(..., description="Google Mobile Client ID (REQUIRED)")
+    GOOGLE_MOBILE_CLIENT_SECRET: str = ""  # Optional for mobile OAuth flow
+    GOOGLE_ANDROID_CLIENT_ID: str = ""  # Optional - Android-specific client ID
 
-    # Google Gemini AI
-    GEMINI_API_KEY: str = ""
+    # Google Gemini AI - REQUIRED from environment
+    GEMINI_API_KEY: str = Field(..., description="Google Gemini API Key (REQUIRED)")
     GEMINI_MODEL: str = "gemini-2.0-flash-exp"  # Latest model 2025
 
-    # PayPal
+    # PayPal - REQUIRED from environment
     PAYPAL_MODE: str = "sandbox"  # sandbox or live
-    PAYPAL_CLIENT_ID: str = ""
-    PAYPAL_CLIENT_SECRET: str = ""
+    PAYPAL_CLIENT_ID: str = Field(..., description="PayPal Client ID (REQUIRED)")
+    PAYPAL_CLIENT_SECRET: str = Field(..., description="PayPal Client Secret (REQUIRED)")
     PAYPAL_WEBHOOK_ID: str = ""
 
-    # Email (SMTP)
+    # Email (SMTP) - REQUIRED from environment
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
-    SMTP_USER: str = ""
-    SMTP_PASSWORD: str = ""
-    EMAIL_FROM: str = ""
+    SMTP_USER: str = Field(..., description="SMTP User Email (REQUIRED)")
+    SMTP_PASSWORD: str = Field(..., description="SMTP Password (REQUIRED)")
+    EMAIL_FROM: str = Field(..., description="Email From Address (REQUIRED)")
     EMAIL_FROM_NAME: str = "Fashion AI Platform"
 
     # File uploads
@@ -96,6 +96,16 @@ class Settings(BaseSettings):
 
     # Rate limiting
     RATE_LIMIT_PER_MINUTE: str = "60/minute"
+    
+    # Redis (for caching, session storage, token blacklist)
+    REDIS_HOST: str = "redis"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    REDIS_PASSWORD: str = ""  # Optional - set if Redis has password
+    REDIS_URL: str = Field(
+        default="redis://redis:6379/0",
+        description="Redis connection URL"
+    )
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

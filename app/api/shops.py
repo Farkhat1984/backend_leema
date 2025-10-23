@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
-from app.api.deps import get_current_shop
+from app.api.deps import get_current_shop, get_current_user
 from app.models.shop import Shop
+from app.models.user import User
 from app.services.shop_service import shop_service
 from app.schemas.shop import ShopResponse, ShopUpdate, ShopAnalytics, ShopList, ShopCreate
 from app.schemas.product import ProductResponse

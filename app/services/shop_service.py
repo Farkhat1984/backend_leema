@@ -58,6 +58,12 @@ class ShopService:
         if not shop:
             return None
 
+        # Track if critical fields are being updated (re-submission after rejection)
+        is_resubmission = False
+        if shop.rejection_reason and (shop_data.phone or shop_data.address or shop_data.description):
+            # If shop was rejected and they're updating required fields, clear rejection reason
+            is_resubmission = True
+
         if shop_data.shop_name:
             shop.shop_name = shop_data.shop_name
         if shop_data.description is not None:
@@ -70,6 +76,11 @@ class ShopService:
             shop.address = shop_data.address
         if shop_data.is_active is not None:
             shop.is_active = shop_data.is_active
+
+        # Clear rejection reason if this is a resubmission
+        if is_resubmission:
+            shop.rejection_reason = None
+            logger.info(f"Shop {shop.shop_name} resubmitted after rejection - cleared rejection reason")
 
         await db.commit()
         await db.refresh(shop)

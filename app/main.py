@@ -7,6 +7,7 @@ from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
 import logging
 import os
+import json
 
 from app.config import settings
 from app.database import init_db, close_db
@@ -14,10 +15,14 @@ from app.tasks.scheduler import start_scheduler, stop_scheduler
 from app.services.settings_service import settings_service
 from app.database import async_session_maker
 from app.core.websocket import connection_manager
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, verify_token_async
+from app.core.redis import init_redis, close_redis
+from app.models.user import User
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # Import routers
-from app.api import auth, users, shops, products, payments, generations, admin, cart, orders, analytics, categories
+from app.api import auth, users, shops, products, payments, generations, admin, cart, orders, analytics, categories, wardrobe
 
 # Configure logging
 logging.basicConfig(
@@ -43,6 +48,10 @@ async def lifespan(app: FastAPI):
     # Initialize database
     await init_db()
     logger.info("Database initialized")
+    
+    # Initialize Redis
+    await init_redis()
+    logger.info("Redis initialized")
 
     # Initialize default settings
     async with async_session_maker() as db:
@@ -56,6 +65,9 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     os.makedirs(f"{settings.UPLOAD_DIR}/products", exist_ok=True)
     os.makedirs(f"{settings.UPLOAD_DIR}/generations", exist_ok=True)
+    os.makedirs(f"{settings.UPLOAD_DIR}/shops", exist_ok=True)
+    os.makedirs(f"{settings.UPLOAD_DIR}/users", exist_ok=True)
+    os.makedirs(f"{settings.UPLOAD_DIR}/temp", exist_ok=True)
 
     logger.info("Application startup complete")
 
@@ -64,6 +76,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down...")
     stop_scheduler()
+    await close_redis()
     await close_db()
     logger.info("Application shutdown complete")
 
@@ -105,6 +118,7 @@ app.include_router(users.router, prefix=f"{settings.API_V1_PREFIX}/users", tags=
 app.include_router(shops.router, prefix=f"{settings.API_V1_PREFIX}/shops", tags=["Shops"])
 app.include_router(categories.router, prefix=f"{settings.API_V1_PREFIX}/categories", tags=["Categories"])
 app.include_router(products.router, prefix=f"{settings.API_V1_PREFIX}/products", tags=["Products"])
+app.include_router(wardrobe.router, prefix=f"{settings.API_V1_PREFIX}/wardrobe", tags=["Wardrobe"])
 app.include_router(cart.router, prefix=f"{settings.API_V1_PREFIX}/cart", tags=["Cart"])
 app.include_router(orders.router, prefix=f"{settings.API_V1_PREFIX}/orders", tags=["Orders"])
 app.include_router(payments.router, prefix=f"{settings.API_V1_PREFIX}/payments", tags=["Payments"])
@@ -174,6 +188,98 @@ async def health_check():
     health_status["websocket_connections"] = connection_manager.get_connection_count()
 
     return health_status
+
+
+@app.websocket("/ws")
+async def websocket_web_endpoint(
+    websocket: WebSocket,
+    token: str = Query(...),
+    client_type: str = Query(...),
+    platform: str = Query("web")
+):
+    """
+    WebSocket endpoint for web platform (client_type as query param)
+    
+    Parameters:
+    - token: JWT access token for authentication
+    - client_type: 'user', 'shop', or 'admin'
+    - platform: 'web' (default) or 'mobile'
+    
+    Usage:
+    ws://localhost:8000/ws?token=YOUR_JWT_TOKEN&client_type=shop&platform=web
+    wss://api.leema.kz/ws?token=YOUR_JWT_TOKEN&client_type=admin&platform=web
+    """
+    logger.info(f"🌐 Web WebSocket connection: client_type={client_type}, platform={platform}")
+    
+    # Check origin header for CORS (web browsers only)
+    origin = websocket.headers.get("origin")
+    if origin:
+        allowed = False
+        for allowed_origin in settings.CORS_ORIGINS:
+            if origin == allowed_origin or origin.startswith(allowed_origin):
+                allowed = True
+                break
+        
+        if not allowed:
+            logger.warning(f"❌ WebSocket connection rejected - invalid origin: {origin}")
+            await websocket.close(code=1008)  # Policy Violation
+            return
+    
+    # Verify token and get user/shop
+    try:
+        payload = await verify_token_async(token, "access")
+        if not payload:
+            logger.warning("❌ WebSocket authentication failed - invalid token")
+            await websocket.close(code=1008)  # Policy Violation
+            return
+        
+        account_id = payload.get("user_id") or payload.get("shop_id") or payload.get("sub")
+        account_type = payload.get("account_type")
+        
+        # Validate client_type matches account_type or is admin
+        if client_type == "admin":
+            # For admin, check if user has admin role
+            async with async_session_maker() as db:
+                result = await db.execute(
+                    select(User).where(User.id == account_id)
+                )
+                user = result.scalar_one_or_none()
+                if not user or user.role != "admin":
+                    logger.warning(f"❌ WebSocket rejected - user {account_id} is not admin")
+                    await websocket.close(code=1008)
+                    return
+        elif client_type != account_type:
+            logger.warning(f"❌ WebSocket rejected - client_type mismatch: {client_type} != {account_type}")
+            await websocket.close(code=1008)
+            return
+        
+        # Accept connection
+        await connection_manager.connect(websocket, client_type, account_id, platform)
+        logger.info(f"✅ WebSocket connected: {client_type}/{account_id} (platform: {platform})")
+        
+        try:
+            while True:
+                # Keep connection alive and handle messages
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                
+                # Handle ping/pong
+                if message.get("type") == "ping":
+                    await websocket.send_json({
+                        "type": "pong",
+                        "timestamp": message.get("timestamp")
+                    })
+                
+        except WebSocketDisconnect:
+            connection_manager.disconnect(websocket)
+            logger.info(f"🔌 WebSocket disconnected: {client_type}/{account_id}")
+        except Exception as e:
+            logger.error(f"❌ WebSocket error: {e}")
+            connection_manager.disconnect(websocket)
+            
+    except Exception as e:
+        logger.error(f"❌ WebSocket setup failed: {e}")
+        await websocket.close(code=1011)  # Internal Error
 
 
 @app.websocket("/ws/{client_type}")

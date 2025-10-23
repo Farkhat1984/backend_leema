@@ -96,13 +96,14 @@ async def try_on_product(
         # Charge user before try-on
         charge_info = await user_service.charge_for_tryon(db, current_user.id)
 
-        # Generate try-on
-        generation = await generation_service.try_on_product(
+        # Generate try-on (with optional wardrobe save)
+        generation, wardrobe_item_id = await generation_service.try_on_product(
             db,
             current_user.id,
             request.product_id,
             request.user_image_url,
-            cost=charge_info.get("amount", 0.0)
+            cost=charge_info.get("amount", 0.0),
+            save_to_wardrobe=request.save_to_wardrobe
         )
 
         if not generation:
@@ -111,9 +112,10 @@ async def try_on_product(
                 detail="Failed to generate try-on. Try again."
             )
 
-        # Add charge info to response
+        # Add charge info and wardrobe ID to response
         response = GenerationResponse.model_validate(generation)
         response.charge_info = charge_info
+        response.wardrobe_item_id = wardrobe_item_id
         return response
 
     except ValueError as e:

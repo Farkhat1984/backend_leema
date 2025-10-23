@@ -29,7 +29,7 @@ class ConnectionManager:
         # Structure: {room_name: [websockets]}
         self.rooms: Dict[str, Set[WebSocket]] = {}
 
-    async def connect(self, websocket: WebSocket, client_type: str, client_id: int):
+    async def connect(self, websocket: WebSocket, client_type: str, client_id: int, platform: str = "web"):
         """Accept and register a new WebSocket connection"""
         await websocket.accept()
 
@@ -43,7 +43,7 @@ class ConnectionManager:
         
         # DEBUG: Log connection state
         total_connections = sum(len(conns) for clients in self.active_connections.values() for conns in clients.values())
-        logger.info(f"✅ WebSocket connected: {client_type}:{client_id} | Total connections: {total_connections}")
+        logger.info(f"✅ WebSocket connected: {client_type}:{client_id} (platform: {platform}) | Total connections: {total_connections}")
         logger.info(f"📊 Active connections: {dict((k, list(v.keys())) for k, v in self.active_connections.items())}")
 
         # Send connection confirmation

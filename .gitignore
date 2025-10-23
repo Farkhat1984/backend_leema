@@ -57,3 +57,6 @@ uploads/
 # Alembic
 alembic/versions/*.py
 !alembic/versions/__init__.py
+
+.env.backup
+.credentials.txt

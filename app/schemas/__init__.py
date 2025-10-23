@@ -44,6 +44,15 @@ from app.schemas.admin import (
     AdminDashboard,
     ModerationAction,
 )
+from app.schemas.wardrobe import (
+    WardrobeItemCreate,
+    WardrobeItemResponse,
+    WardrobeItemUpdate,
+    WardrobeItemFromShop,
+    WardrobeItemFromGeneration,
+    WardrobeListResponse,
+    WardrobeItemDeleted,
+)
 
 __all__ = [
     "UserCreate",
@@ -76,4 +85,11 @@ __all__ = [
     "AdminSettings",
     "AdminDashboard",
     "ModerationAction",
+    "WardrobeItemCreate",
+    "WardrobeItemResponse",
+    "WardrobeItemUpdate",
+    "WardrobeItemFromShop",
+    "WardrobeItemFromGeneration",
+    "WardrobeListResponse",
+    "WardrobeItemDeleted",
 ]
