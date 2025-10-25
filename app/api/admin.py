@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, desc, asc, or_
 import logging
 from app.database import get_db
 
@@ -15,8 +15,10 @@ from app.models.moderation import ModerationQueue
 from app.models.refund import Refund, RefundStatus
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.settings import PlatformSettings
+from app.models.wardrobe import UserWardrobeItem, WardrobeItemSource
 from app.services.product_service import product_service
 from app.services.settings_service import settings_service
+from app.services.wardrobe_service import wardrobe_service
 from app.core.email import email_service
 from app.core.websocket import connection_manager
 from app.schemas.admin import (
@@ -32,13 +34,15 @@ from app.schemas.admin import (
 )
 from app.schemas.product import ProductResponse
 from app.schemas.order import OrderResponse, OrderItemResponse
+from app.schemas.wardrobe import WardrobeItemResponse
 from app.schemas.webhook import (
     create_product_moderation_event,
     create_settings_update_event,
     create_moderation_queue_event,
     WebhookEventType
 )
-from typing import List
+from typing import List, Optional
+from fastapi import Query
 from app.core.datetime_utils import utc_now
 
 router = APIRouter()
@@ -1632,4 +1636,318 @@ async def delete_shop_admin(
         "message": "Shop deleted successfully",
         "shop_id": shop_id,
         "shop_name": shop_name
+    }
+
+
+# ============================================================================
+# WARDROBE MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@router.get("/wardrobes")
+async def get_all_wardrobes(
+    skip: int = Query(0, ge=0, description="Pagination offset"),
+    limit: int = Query(50, ge=1, le=100, description="Items per page (max 100)"),
+    user_id: Optional[int] = Query(None, description="Filter by user ID"),
+    source: Optional[str] = Query(None, description="Filter by source: shop_product, generated, uploaded, purchased"),
+    is_favorite: Optional[bool] = Query(None, description="Filter by favorite status"),
+    folder: Optional[str] = Query(None, description="Filter by folder name"),
+    search: Optional[str] = Query(None, description="Search in name and description"),
+    sort_by: str = Query("created_at", description="Sort by: created_at, updated_at, user_id, name"),
+    sort_order: str = Query("desc", description="Sort order: asc, desc"),
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get all wardrobe items from all users with filters and pagination.
+    Admin-only endpoint for monitoring user wardrobes.
+    
+    - **skip**: Pagination offset (default: 0)
+    - **limit**: Items per page, max 100 (default: 50)
+    - **user_id**: Filter by specific user
+    - **source**: Filter by source type
+    - **is_favorite**: Filter favorites only
+    - **folder**: Filter by folder/collection
+    - **search**: Search in name and description
+    - **sort_by**: Sort field (created_at, updated_at, user_id, name)
+    - **sort_order**: Sort direction (asc, desc)
+    """
+    # Validate source enum if provided
+    if source:
+        try:
+            WardrobeItemSource(source)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid source. Must be one of: {[s.value for s in WardrobeItemSource]}"
+            )
+    
+    # Validate sort fields
+    valid_sort_fields = ["created_at", "updated_at", "user_id", "name"]
+    if sort_by not in valid_sort_fields:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid sort_by. Must be one of: {valid_sort_fields}"
+        )
+    
+    if sort_order not in ["asc", "desc"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid sort_order. Must be 'asc' or 'desc'"
+        )
+    
+    # Limit max page size
+    limit = min(limit, 100)
+    
+    # Build query - join with User to get user info
+    query = select(UserWardrobeItem, User).join(
+        User, UserWardrobeItem.user_id == User.id
+    )
+    
+    # Apply filters
+    if user_id:
+        query = query.where(UserWardrobeItem.user_id == user_id)
+    
+    if source:
+        source_enum = WardrobeItemSource(source)
+        query = query.where(UserWardrobeItem.source == source_enum)
+    
+    if is_favorite is not None:
+        query = query.where(UserWardrobeItem.is_favorite == is_favorite)
+    
+    if folder:
+        query = query.where(UserWardrobeItem.folder == folder)
+    
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.where(
+            or_(
+                UserWardrobeItem.name.ilike(search_pattern),
+                UserWardrobeItem.description.ilike(search_pattern)
+            )
+        )
+    
+    # Get total count before pagination
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+    
+    # Apply sorting
+    sort_field = getattr(UserWardrobeItem, sort_by)
+    if sort_order == "desc":
+        query = query.order_by(desc(sort_field))
+    else:
+        query = query.order_by(asc(sort_field))
+    
+    # Apply pagination
+    query = query.offset(skip).limit(limit)
+    
+    # Execute query
+    result = await db.execute(query)
+    rows = result.all()
+    
+    # Format response with user info
+    items = []
+    for wardrobe_item, user in rows:
+        item_dict = {
+            "id": wardrobe_item.id,
+            "user_id": wardrobe_item.user_id,
+            "user_name": user.name,
+            "user_email": user.email,
+            "source": wardrobe_item.source.value,
+            "name": wardrobe_item.name,
+            "description": wardrobe_item.description,
+            "images": wardrobe_item.images,
+            "characteristics": wardrobe_item.characteristics,
+            "price": float(wardrobe_item.price) if wardrobe_item.price else None,
+            "category_id": wardrobe_item.category_id,
+            "shop_name": wardrobe_item.shop_name,
+            "is_favorite": wardrobe_item.is_favorite,
+            "folder": wardrobe_item.folder,
+            "original_product_id": wardrobe_item.original_product_id,
+            "generation_id": wardrobe_item.generation_id,
+            "created_at": wardrobe_item.created_at,
+            "updated_at": wardrobe_item.updated_at
+        }
+        items.append(item_dict)
+    
+    page = skip // limit + 1
+    has_more = (skip + limit) < total
+    
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": limit,
+        "has_more": has_more
+    }
+
+
+@router.get("/wardrobes/stats")
+async def get_wardrobe_stats(
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get wardrobe statistics across all users.
+    Admin-only endpoint for analytics.
+    
+    Returns:
+    - total_items: Total number of wardrobe items
+    - total_users_with_items: Number of users who have wardrobe items
+    - by_source: Count by each source type
+    - avg_items_per_user: Average number of items per user
+    - top_users: Top 10 users by wardrobe item count
+    - top_folders: Top 10 most used folder names
+    - favorites_count: Number of items marked as favorite
+    """
+    # Total items
+    total_result = await db.execute(select(func.count(UserWardrobeItem.id)))
+    total_items = total_result.scalar() or 0
+    
+    # Total users with items
+    users_with_items_result = await db.execute(
+        select(func.count(func.distinct(UserWardrobeItem.user_id)))
+    )
+    total_users_with_items = users_with_items_result.scalar() or 0
+    
+    # Count by source
+    by_source = {}
+    for source_type in WardrobeItemSource:
+        source_result = await db.execute(
+            select(func.count(UserWardrobeItem.id)).where(
+                UserWardrobeItem.source == source_type
+            )
+        )
+        by_source[source_type.value] = source_result.scalar() or 0
+    
+    # Average items per user (only users with items)
+    avg_items_per_user = total_items / total_users_with_items if total_users_with_items > 0 else 0
+    
+    # Top users by item count
+    top_users_result = await db.execute(
+        select(
+            UserWardrobeItem.user_id,
+            User.name,
+            User.email,
+            func.count(UserWardrobeItem.id).label("item_count")
+        )
+        .join(User, UserWardrobeItem.user_id == User.id)
+        .group_by(UserWardrobeItem.user_id, User.name, User.email)
+        .order_by(desc("item_count"))
+        .limit(10)
+    )
+    top_users = [
+        {
+            "user_id": row.user_id,
+            "user_name": row.name,
+            "user_email": row.email,
+            "item_count": row.item_count
+        }
+        for row in top_users_result.all()
+    ]
+    
+    # Top folders
+    top_folders_result = await db.execute(
+        select(
+            UserWardrobeItem.folder,
+            func.count(UserWardrobeItem.id).label("item_count")
+        )
+        .where(UserWardrobeItem.folder.isnot(None))
+        .group_by(UserWardrobeItem.folder)
+        .order_by(desc("item_count"))
+        .limit(10)
+    )
+    top_folders = [
+        {
+            "folder": row.folder,
+            "item_count": row.item_count
+        }
+        for row in top_folders_result.all()
+    ]
+    
+    # Favorites count
+    favorites_result = await db.execute(
+        select(func.count(UserWardrobeItem.id)).where(
+            UserWardrobeItem.is_favorite == True
+        )
+    )
+    favorites_count = favorites_result.scalar() or 0
+    
+    return {
+        "total_items": total_items,
+        "total_users_with_items": total_users_with_items,
+        "by_source": by_source,
+        "avg_items_per_user": round(avg_items_per_user, 2),
+        "top_users": top_users,
+        "top_folders": top_folders,
+        "favorites_count": favorites_count
+    }
+
+
+@router.get("/wardrobes/user/{user_id}")
+async def get_user_wardrobe(
+    user_id: int,
+    skip: int = Query(0, ge=0, description="Pagination offset"),
+    limit: int = Query(50, ge=1, le=100, description="Items per page (max 100)"),
+    source: Optional[str] = Query(None, description="Filter by source"),
+    is_favorite: Optional[bool] = Query(None, description="Filter by favorite status"),
+    folder: Optional[str] = Query(None, description="Filter by folder name"),
+    search: Optional[str] = Query(None, description="Search in name and description"),
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get wardrobe items for a specific user.
+    Admin-only endpoint.
+    
+    - **user_id**: User ID to get wardrobe for
+    - **skip**: Pagination offset (default: 0)
+    - **limit**: Items per page, max 100 (default: 50)
+    - **source**: Filter by source type
+    - **is_favorite**: Filter favorites only
+    - **folder**: Filter by folder/collection
+    - **search**: Search in name and description
+    """
+    # Check if user exists
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Validate source enum if provided
+    if source:
+        try:
+            WardrobeItemSource(source)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid source. Must be one of: {[s.value for s in WardrobeItemSource]}"
+            )
+    
+    # Get user's wardrobe items using the service
+    items, total = await wardrobe_service.get_user_wardrobe(
+        db=db,
+        user_id=user_id,
+        skip=skip,
+        limit=limit,
+        source=source,
+        is_favorite=is_favorite,
+        folder=folder,
+        search=search
+    )
+    
+    page = skip // limit + 1
+    has_more = (skip + limit) < total
+    
+    return {
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email
+        },
+        "items": [WardrobeItemResponse.model_validate(item).model_dump() for item in items],
+        "total": total,
+        "page": page,
+        "page_size": limit,
+        "has_more": has_more
     }

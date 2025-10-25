@@ -34,6 +34,7 @@ class ShopService:
     @staticmethod
     async def create(db: AsyncSession, shop_data: ShopCreate) -> Shop:
         """Create new shop - requires admin approval by default"""
+        logger.info(f"Creating shop with data: phone={shop_data.phone}, whatsapp={shop_data.whatsapp_number}")
         shop = Shop(
             google_id=shop_data.google_id,
             email=shop_data.email,
@@ -42,48 +43,79 @@ class ShopService:
             description=shop_data.description,
             avatar_url=shop_data.avatar_url,
             phone=shop_data.phone,
+            whatsapp_number=shop_data.whatsapp_number,
             address=shop_data.address,
             is_approved=False,  # Requires admin approval
         )
         db.add(shop)
         await db.commit()
         await db.refresh(shop)
-        logger.info(f"Shop created (pending approval): {shop.shop_name}")
+        logger.info(f"Shop created (pending approval): {shop.shop_name}, phone={shop.phone}, whatsapp={shop.whatsapp_number}")
         return shop
 
     @staticmethod
     async def update(db: AsyncSession, shop_id: int, shop_data: ShopUpdate) -> Optional[Shop]:
         """Update shop"""
+        logger.info(f"🔍 [SHOP UPDATE] Starting update for shop {shop_id}")
+        logger.info(f"📦 [SHOP UPDATE] Received data (all fields): {shop_data.model_dump()}")
+        logger.info(f"📦 [SHOP UPDATE] Received data (exclude_unset): {shop_data.model_dump(exclude_unset=True)}")
+        
         shop = await ShopService.get_by_id(db, shop_id)
         if not shop:
+            logger.error(f"❌ [SHOP UPDATE] Shop {shop_id} not found for update")
             return None
+
+        logger.info(f"📊 [SHOP UPDATE] Current shop state BEFORE update:")
+        logger.info(f"   - Phone: {shop.phone}")
+        logger.info(f"   - WhatsApp: {shop.whatsapp_number}")
+        logger.info(f"   - Avatar: {shop.avatar_url}")
 
         # Track if critical fields are being updated (re-submission after rejection)
         is_resubmission = False
         if shop.rejection_reason and (shop_data.phone or shop_data.address or shop_data.description):
-            # If shop was rejected and they're updating required fields, clear rejection reason
             is_resubmission = True
 
-        if shop_data.shop_name:
-            shop.shop_name = shop_data.shop_name
-        if shop_data.description is not None:
-            shop.description = shop_data.description
-        if shop_data.avatar_url is not None:
-            shop.avatar_url = shop_data.avatar_url
-        if shop_data.phone is not None:
-            shop.phone = shop_data.phone
-        if shop_data.address is not None:
-            shop.address = shop_data.address
-        if shop_data.is_active is not None:
-            shop.is_active = shop_data.is_active
+        # КЛЮЧЕВАЯ ЛОГИКА: используем exclude_unset чтобы обновлять ТОЛЬКО переданные поля
+        update_dict = shop_data.model_dump(exclude_unset=True)
+        
+        logger.info(f"🔄 [SHOP UPDATE] Fields to update (exclude_unset): {list(update_dict.keys())}")
+        logger.info(f"🔄 [SHOP UPDATE] Update values: {update_dict}")
+        
+        for field, value in update_dict.items():
+            old_value = getattr(shop, field)
+            logger.info(f"   ✏️ Setting {field}: {old_value} -> {value}")
+            setattr(shop, field, value)
+            
+            # Verify the field was actually set
+            new_value = getattr(shop, field)
+            if new_value != value:
+                logger.warning(f"   ⚠️ Field {field} was set to {value} but is now {new_value}")
 
         # Clear rejection reason if this is a resubmission
         if is_resubmission:
             shop.rejection_reason = None
-            logger.info(f"Shop {shop.shop_name} resubmitted after rejection - cleared rejection reason")
+            logger.info(f"🔄 [SHOP UPDATE] Shop {shop.shop_name} resubmitted after rejection - cleared rejection reason")
 
+        # Commit changes
+        logger.info(f"💾 [SHOP UPDATE] Committing changes to database...")
         await db.commit()
         await db.refresh(shop)
+        
+        logger.info(f"✅ [SHOP UPDATE] Shop {shop_id} updated successfully")
+        logger.info(f"📊 [SHOP UPDATE] Final shop state AFTER update:")
+        logger.info(f"   - Phone: {shop.phone}")
+        logger.info(f"   - WhatsApp: {shop.whatsapp_number}")
+        logger.info(f"   - Avatar: {shop.avatar_url}")
+        
+        # Verify in database
+        logger.info(f"🔍 [SHOP UPDATE] Verifying data was persisted...")
+        verification_shop = await ShopService.get_by_id(db, shop_id)
+        if verification_shop:
+            logger.info(f"✅ [SHOP UPDATE] Verification - data in DB:")
+            logger.info(f"   - Phone: {verification_shop.phone}")
+            logger.info(f"   - WhatsApp: {verification_shop.whatsapp_number}")
+            logger.info(f"   - Avatar: {verification_shop.avatar_url}")
+        
         return shop
 
     @staticmethod

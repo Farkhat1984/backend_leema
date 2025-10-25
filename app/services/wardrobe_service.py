@@ -242,13 +242,20 @@ class WardrobeService:
             logger.warning(f"User {user_id} reached wardrobe limit ({count}/{WardrobeService.MAX_WARDROBE_ITEMS_PER_USER})")
             return None
         
-        # Get product
-        result = await db.execute(select(Product).where(Product.id == product_id))
-        product = result.scalar_one_or_none()
+        # Get product with shop relationship
+        from app.models.shop import Shop
+        result = await db.execute(
+            select(Product, Shop.shop_name)
+            .join(Shop, Product.shop_id == Shop.id)
+            .where(Product.id == product_id)
+        )
+        row = result.first()
         
-        if not product:
+        if not row:
             logger.warning(f"Product {product_id} not found")
             return None
+        
+        product, shop_name = row
         
         # Use custom name or product name
         name = custom_data.name if custom_data and custom_data.name else product.name
@@ -256,7 +263,7 @@ class WardrobeService:
         folder = custom_data.folder if custom_data and custom_data.folder else None
         is_favorite = custom_data.is_favorite if custom_data else False
         
-        # Create wardrobe item
+        # Create wardrobe item with all product data
         wardrobe_item = UserWardrobeItem(
             user_id=user_id,
             source=WardrobeItemSource.SHOP_PRODUCT,
@@ -265,6 +272,9 @@ class WardrobeService:
             description=description,
             characteristics=product.characteristics,
             images=product.images or [],  # Link to original images
+            price=float(product.price) if product.price else None,
+            category_id=product.category_id,
+            shop_name=shop_name,
             is_favorite=is_favorite,
             folder=folder,
             created_at=utc_now(),
@@ -402,6 +412,12 @@ class WardrobeService:
             item.characteristics = update_data.characteristics
         if update_data.images is not None:
             item.images = update_data.images[:WardrobeService.MAX_IMAGES_PER_ITEM]
+        if update_data.price is not None:
+            item.price = update_data.price
+        if update_data.category_id is not None:
+            item.category_id = update_data.category_id
+        if update_data.shop_name is not None:
+            item.shop_name = update_data.shop_name
         if update_data.is_favorite is not None:
             item.is_favorite = update_data.is_favorite
         if update_data.folder is not None:
@@ -437,16 +453,34 @@ class WardrobeService:
             return False
         
         user_id = item.user_id
+        source = item.source
         
         # Delete from database
         await db.delete(item)
         await db.commit()
         
-        # Delete files if requested (only for uploaded items with copied files)
-        if delete_files and item.source == WardrobeItemSource.UPLOADED:
-            UploadPath.delete_wardrobe_item_files(user_id, wardrobe_id)
+        # Delete files based on source
+        if delete_files:
+            if source == WardrobeItemSource.UPLOADED:
+                # Delete uploaded wardrobe files
+                UploadPath.delete_wardrobe_item_files(user_id, wardrobe_id)
+                logger.info(f"Deleted uploaded files for wardrobe item {wardrobe_id}")
+            
+            elif source == WardrobeItemSource.SHOP_PRODUCT:
+                # Check if files were copied (they would be in wardrobe directory)
+                # If files exist in wardrobe directory, delete them
+                from pathlib import Path
+                from app.config import settings
+                wardrobe_dir = Path(settings.UPLOAD_DIR) / "users" / str(user_id) / "wardrobe" / str(wardrobe_id)
+                if wardrobe_dir.exists():
+                    UploadPath.delete_wardrobe_item_files(user_id, wardrobe_id)
+                    logger.info(f"Deleted copied shop product files for wardrobe item {wardrobe_id}")
+            
+            # For GENERATED source: DO NOT delete files
+            # Files belong to Generation record and should only be deleted when Generation is deleted
+            # This prevents data loss if user wants to re-add generation to wardrobe
         
-        logger.info(f"Wardrobe item {wardrobe_id} deleted")
+        logger.info(f"Wardrobe item {wardrobe_id} deleted (source: {source})")
         return True
     
     @staticmethod

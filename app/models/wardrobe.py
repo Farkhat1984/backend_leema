@@ -4,7 +4,7 @@ Track what users try on and save to analyze fashion trends
 """
 from __future__ import annotations
 
-from sqlalchemy import String, Integer, DateTime, ForeignKey, Enum as SQLEnum, JSON
+from sqlalchemy import String, Integer, Numeric, DateTime, ForeignKey, Enum as SQLEnum, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from app.models.product import Product
     from app.models.generation import Generation
     from app.models.user import User
+    from app.models.category import ProductCategory
 
 
 class WardrobeItemSource(str, enum.Enum):
@@ -51,6 +52,11 @@ class UserWardrobeItem(Base):
     images: Mapped[list] = mapped_column(JSON, nullable=False, default=list)  # URLs
     characteristics: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Size, color, etc.
     
+    # Product metadata (copied from shop product, user can edit)
+    price: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    category_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("product_categories.id"), nullable=True, index=True)
+    shop_name: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Shop name at time of adding
+    
     # Analytics metadata
     is_favorite: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
     folder: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
@@ -65,6 +71,7 @@ class UserWardrobeItem(Base):
     user: Mapped["User"] = relationship("User", back_populates="wardrobe_items")
     original_product: Mapped["Product"] = relationship("Product", foreign_keys=[original_product_id])
     generation: Mapped["Generation"] = relationship("Generation", foreign_keys=[generation_id])
+    category: Mapped["ProductCategory"] = relationship("ProductCategory", foreign_keys=[category_id])
 
     def __repr__(self):
         return f"<WardrobeItem(id={self.id}, user_id={self.user_id}, source={self.source})>"

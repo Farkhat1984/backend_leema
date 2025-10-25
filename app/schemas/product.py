@@ -16,6 +16,7 @@ class ProductBase(BaseModel):
     description: Optional[str] = Field(None, max_length=2000, description="Product description")
     price: float = Field(..., gt=0, le=1000000, description="Product price (must be positive, max 1M)")
     characteristics: Optional[Dict] = Field(None, description="Product characteristics as JSON")
+    category_id: Optional[int] = Field(None, description="Product category ID")
 
 
 class ProductCreate(ProductBase):
@@ -44,12 +45,14 @@ class ProductUpdate(BaseModel):
     description: Optional[str] = Field(None, max_length=2000)
     price: Optional[float] = Field(None, gt=0)
     characteristics: Optional[Dict] = None
+    category_id: Optional[int] = None
     images: Optional[List[str]] = None
 
 
 class ProductResponse(ProductBase):
     id: int
     shop_id: int
+    category_id: Optional[int] = None
     images: Optional[List[str]] = None
     rent_expires_at: Optional[datetime] = None
     is_active: bool

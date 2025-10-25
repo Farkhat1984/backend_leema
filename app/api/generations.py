@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 from typing import Any, Dict
 
 from app.database import get_db
@@ -169,6 +170,54 @@ async def apply_clothing_to_model(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Apply clothing error: {str(e)}")
+
+
+@router.delete("/{generation_id}")
+async def delete_generation(
+    generation_id: int,
+    delete_files: bool = Query(True, description="Delete associated image files"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Delete generation
+    
+    Cannot delete if generation is saved in wardrobe.
+    Remove from wardrobe first.
+    
+    **Path parameters:**
+    - generation_id: ID of the generation to delete
+    
+    **Query parameters:**
+    - delete_files: If true, deletes image files (default: true)
+    """
+    deleted = await generation_service.delete_generation(
+        db, generation_id, current_user.id, delete_files=delete_files
+    )
+    
+    if not deleted:
+        # Check if it exists but is in use
+        from app.models.wardrobe import UserWardrobeItem
+        wardrobe_result = await db.execute(
+            select(func.count(UserWardrobeItem.id))
+            .where(UserWardrobeItem.generation_id == generation_id)
+        )
+        wardrobe_count = wardrobe_result.scalar() or 0
+        
+        if wardrobe_count > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot delete: generation is saved in {wardrobe_count} wardrobe item(s). Remove from wardrobe first."
+            )
+        
+        raise HTTPException(
+            status_code=404,
+            detail="Generation not found"
+        )
+    
+    return {"message": "Generation deleted successfully", "id": generation_id}
+
+
 # New Gemini 2.5 Flash Image endpoints
 # Append this to generations.py or use as reference
 

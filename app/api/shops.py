@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.api.deps import get_current_shop, get_current_user
@@ -51,6 +51,8 @@ async def create_shop(
     owner_name: str = Form(...),
     description: Optional[str] = Form(None),
     avatar_url: Optional[str] = Form(None),
+    phone: Optional[str] = Form(None),
+    whatsapp_number: Optional[str] = Form(None),
     is_active: Optional[bool] = Form(True),
     db: AsyncSession = Depends(get_db)
 ):
@@ -72,6 +74,8 @@ async def create_shop(
         owner_name=owner_name,
         description=description,
         avatar_url=avatar_url,
+        phone=phone,
+        whatsapp_number=whatsapp_number,
         is_active=is_active
     )
     shop = await shop_service.create(db, shop_data)
@@ -218,6 +222,57 @@ async def get_current_shop_info(
     return ShopResponse.model_validate(current_shop)
 
 
+@router.post("/me/debug-update")
+async def debug_update_shop(
+    request: Request,
+    current_shop: Shop = Depends(get_current_shop),
+    db: AsyncSession = Depends(get_db)
+):
+    """Debug endpoint to see raw request data"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Get raw body
+    body = await request.body()
+    logger.info(f"🐛 [DEBUG] Raw request body: {body.decode('utf-8')}")
+    
+    # Parse JSON
+    import json
+    data = json.loads(body)
+    logger.info(f"🐛 [DEBUG] Parsed JSON: {data}")
+    logger.info(f"🐛 [DEBUG] whatsapp_number in data: {'whatsapp_number' in data}")
+    logger.info(f"🐛 [DEBUG] avatar_url in data: {'avatar_url' in data}")
+    
+    if 'whatsapp_number' in data:
+        logger.info(f"🐛 [DEBUG] whatsapp_number value: {data['whatsapp_number']}")
+    if 'avatar_url' in data:
+        logger.info(f"🐛 [DEBUG] avatar_url value: {data['avatar_url']}")
+    
+    # Try to parse with Pydantic
+    from app.schemas.shop import ShopUpdate
+    try:
+        shop_data = ShopUpdate(**data)
+        logger.info(f"🐛 [DEBUG] Pydantic parsed successfully")
+        logger.info(f"🐛 [DEBUG] shop_data.whatsapp_number = {shop_data.whatsapp_number}")
+        logger.info(f"🐛 [DEBUG] shop_data.avatar_url = {shop_data.avatar_url}")
+        logger.info(f"🐛 [DEBUG] model_dump(): {shop_data.model_dump()}")
+        logger.info(f"🐛 [DEBUG] model_dump(exclude_unset=True): {shop_data.model_dump(exclude_unset=True)}")
+        
+        return {
+            "status": "success",
+            "raw_data": data,
+            "pydantic_parsed": shop_data.model_dump(),
+            "exclude_unset": shop_data.model_dump(exclude_unset=True)
+        }
+    except Exception as e:
+        logger.error(f"🐛 [DEBUG] Pydantic validation error: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "raw_data": data
+        }
+
+
 @router.put("/me", response_model=ShopResponse)
 async def update_current_shop(
     shop_data: ShopUpdate,
@@ -225,8 +280,20 @@ async def update_current_shop(
     db: AsyncSession = Depends(get_db)
 ):
     """Update current shop"""
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"🔍 [API] Updating shop {current_shop.id} ({current_shop.shop_name})")
+    logger.info(f"📦 [API] Request data: {shop_data.model_dump()}")
+    logger.info(f"📦 [API] Exclude unset: {shop_data.model_dump(exclude_unset=True)}")
+    
+    # ОТЛАДКА: Проверяем каждое поле отдельно
+    logger.info(f"🔍 [API DEBUG] shop_data.phone = {shop_data.phone}")
+    logger.info(f"🔍 [API DEBUG] shop_data.whatsapp_number = {shop_data.whatsapp_number}")
+    logger.info(f"🔍 [API DEBUG] shop_data.avatar_url = {shop_data.avatar_url}")
+    
     updated_shop = await shop_service.update(db, current_shop.id, shop_data)
     if not updated_shop:
+        logger.error(f"❌ [API] Shop not found during update")
         raise HTTPException(status_code=404, detail="Shop not found")
     
     # Send WebSocket event for shop update
@@ -520,4 +587,84 @@ async def get_shop_order_details(
             "name": user.name
         } if user else None,
         "note": "Shows only items from your shop"
+    }
+
+
+@router.get("/{shop_id}", response_model=ShopResponse)
+async def get_shop_by_id(
+    shop_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get shop details by ID (public)"""
+    from app.services.shop_service import shop_service
+    
+    shop = await shop_service.get_by_id(db, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    
+    return ShopResponse.model_validate(shop)
+
+
+@router.post("/{shop_id}/products/{product_id}/whatsapp-inquiry")
+async def create_whatsapp_inquiry(
+    shop_id: int,
+    product_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Generate WhatsApp link for product inquiry
+    Returns a WhatsApp deep link that opens chat with the shop
+    """
+    from app.services.shop_service import shop_service
+    from app.services.product_service import product_service
+    from urllib.parse import quote
+    
+    # Get shop
+    shop = await shop_service.get_by_id(db, shop_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    
+    if not shop.whatsapp_number:
+        raise HTTPException(
+            status_code=400, 
+            detail="This shop does not have WhatsApp configured"
+        )
+    
+    # Get product
+    product = await product_service.get_by_id(db, product_id)
+    if not product or product.shop_id != shop_id:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    # Increment product views/interactions (optional analytics)
+    await product_service.increment_views(db, product_id)
+    
+    # Clean phone number (remove spaces, dashes, etc)
+    phone = shop.whatsapp_number.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    
+    # Ensure phone has country code
+    if not phone.startswith("+"):
+        # Assume Kazakhstan if no code (you can adjust this)
+        if phone.startswith("7") or phone.startswith("8"):
+            phone = f"+7{phone[1:]}"
+        else:
+            phone = f"+{phone}"
+    
+    # Create message with product details
+    message = f"Здравствуйте! Интересует товар: {product.name}\n"
+    if product.price:
+        message += f"Цена: {product.price} ₸\n"
+    message += f"\nID товара: {product.id}"
+    
+    # URL encode the message
+    encoded_message = quote(message)
+    
+    # Generate WhatsApp link (universal format)
+    whatsapp_url = f"https://wa.me/{phone}?text={encoded_message}"
+    
+    return {
+        "whatsapp_url": whatsapp_url,
+        "shop_name": shop.shop_name,
+        "product_name": product.name,
+        "product_price": float(product.price),
+        "message": "WhatsApp link generated successfully"
     }

@@ -30,6 +30,7 @@ class ProductService:
             description=product_data.description,
             characteristics=product_data.characteristics,
             price=product_data.price,
+            category_id=product_data.category_id,
             images=product_data.images,
             moderation_status=ModerationStatus.PENDING,
             is_active=False,
@@ -67,6 +68,9 @@ class ProductService:
             product.price = product_data.price
         if product_data.characteristics is not None:
             product.characteristics = product_data.characteristics
+        if product_data.category_id is not None:
+            product.category_id = product_data.category_id
+            logger.info(f"Category updated to: {product.category_id}")
         # Update images even if it's an empty list (to allow deletion of all images)
         if product_data.images is not None:
             product.images = product_data.images if product_data.images else []

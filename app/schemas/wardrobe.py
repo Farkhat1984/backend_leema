@@ -20,6 +20,9 @@ class WardrobeItemBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255, description="Item name")
     description: Optional[str] = Field(None, max_length=2000, description="Item description")
     characteristics: Optional[Dict] = Field(None, description="Item characteristics (size, color, etc.)")
+    price: Optional[float] = Field(None, gt=0, description="Item price")
+    category_id: Optional[int] = Field(None, description="Category ID")
+    shop_name: Optional[str] = Field(None, max_length=255, description="Shop name")
     is_favorite: bool = Field(default=False, description="Is this item marked as favorite")
     folder: Optional[str] = Field(None, max_length=100, description="Folder/collection name for organization")
 
@@ -66,6 +69,9 @@ class WardrobeItemUpdate(BaseModel):
     description: Optional[str] = Field(None, max_length=2000)
     characteristics: Optional[Dict] = None
     images: Optional[List[str]] = Field(None, max_length=5)
+    price: Optional[float] = Field(None, gt=0)
+    category_id: Optional[int] = None
+    shop_name: Optional[str] = Field(None, max_length=255)
     is_favorite: Optional[bool] = None
     folder: Optional[str] = Field(None, max_length=100)
     

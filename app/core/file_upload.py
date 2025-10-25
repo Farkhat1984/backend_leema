@@ -264,6 +264,33 @@ class UploadPath:
             return False
     
     @staticmethod
+    def delete_generation_files(user_id: int, generation_id: int) -> bool:
+        """
+        Delete all files for a generation
+        
+        Args:
+            user_id: User ID
+            generation_id: Generation ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            gen_dir = Path(settings.UPLOAD_DIR) / "generations" / str(user_id)
+            if gen_dir.exists():
+                # Delete all files matching generation_id pattern
+                deleted_count = 0
+                for file_path in gen_dir.glob(f"{generation_id}_*.jpg"):
+                    file_path.unlink()
+                    logger.info(f"Generation file deleted: {file_path}")
+                    deleted_count += 1
+                return deleted_count > 0
+            return False
+        except Exception as e:
+            logger.error(f"Error deleting generation files: {e}")
+            return False
+    
+    @staticmethod
     def get_full_url(relative_url: str) -> str:
         """
         Convert relative URL to full URL

@@ -201,6 +201,7 @@ async def create_product(
     description: Optional[str] = Form(None),
     price: float = Form(...),
     characteristics: Optional[str] = Form(None),
+    category_id: Optional[int] = Form(None),
     image_urls: Optional[str] = Form(None),
     current_shop: Shop = Depends(get_current_shop),
     db: AsyncSession = Depends(get_db)
@@ -239,6 +240,7 @@ async def create_product(
         description=description,
         price=price,
         characteristics=chars,
+        category_id=category_id,
         images=images
     )
 
@@ -414,9 +416,10 @@ async def delete_product(
         action="deleted"
     )
     
-    logger.info(f"🔔 Broadcasting product.deleted event to ALL shops and admins")
+    logger.info(f"🔔 Broadcasting product.deleted event to ALL shops, admins and users")
     await connection_manager.broadcast_to_type(product_event.model_dump(mode='json'), "shop")
     await connection_manager.broadcast_to_type(product_event.model_dump(mode='json'), "admin")
+    await connection_manager.broadcast_to_type(product_event.model_dump(mode='json'), "user")
     
     # If product was pending moderation, update queue count
     if was_pending:

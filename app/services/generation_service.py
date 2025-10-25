@@ -1,7 +1,9 @@
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_, func
 from app.models.generation import Generation, GenerationType
 from app.services.product_service import product_service
 from app.core.gemini import gemini_ai
+from app.core.file_upload import UploadPath
 from typing import Optional
 import logging
 
@@ -140,6 +142,64 @@ class GenerationService:
         await db.refresh(generation)
         logger.info(f"Clothing applied for user {user_id}, cost: {cost}")
         return generation
+
+    @staticmethod
+    async def delete_generation(
+        db: AsyncSession,
+        generation_id: int,
+        user_id: int,
+        delete_files: bool = True
+    ) -> bool:
+        """
+        Delete generation and optionally its files
+        
+        Args:
+            db: Database session
+            generation_id: Generation ID
+            user_id: User ID (for ownership check)
+            delete_files: If True, delete image files
+            
+        Returns:
+            True if deleted, False if not found or not owned
+        """
+        # Get generation
+        result = await db.execute(
+            select(Generation).where(
+                and_(
+                    Generation.id == generation_id,
+                    Generation.user_id == user_id
+                )
+            )
+        )
+        generation = result.scalar_one_or_none()
+        
+        if not generation:
+            logger.warning(f"Generation {generation_id} not found or doesn't belong to user {user_id}")
+            return False
+        
+        # Check if used in wardrobe
+        from app.models.wardrobe import UserWardrobeItem
+        wardrobe_result = await db.execute(
+            select(func.count(UserWardrobeItem.id))
+            .where(UserWardrobeItem.generation_id == generation_id)
+        )
+        wardrobe_count = wardrobe_result.scalar() or 0
+        
+        if wardrobe_count > 0:
+            logger.warning(f"Cannot delete generation {generation_id}: used in {wardrobe_count} wardrobe items")
+            return False
+        
+        # Delete from database
+        await db.delete(generation)
+        await db.commit()
+        
+        # Delete files if requested
+        if delete_files:
+            UploadPath.delete_generation_files(user_id, generation_id)
+            logger.info(f"Generation {generation_id} files deleted for user {user_id}")
+        
+        logger.info(f"Generation {generation_id} deleted")
+        return True
 
 
 generation_service = GenerationService()
