@@ -3,12 +3,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.core.google_auth import google_auth
+from app.core.apple_auth import apple_auth
 from app.core.security import create_access_token, create_refresh_token, verify_token, verify_token_async
 from app.services.user_service import user_service
 from app.services.shop_service import shop_service
 from app.schemas.auth import (
-    GoogleAuthRequest, GoogleAuthResponse, Token, RefreshTokenRequest,
-    LogoutRequest, AccountType, ClientPlatform
+    GoogleAuthRequest, GoogleAuthResponse, AppleAuthRequest, AppleAuthResponse,
+    Token, RefreshTokenRequest, LogoutRequest, AccountType, ClientPlatform
 )
 from app.schemas.user import UserCreate, UserResponse
 from app.schemas.shop import ShopCreate, ShopResponse
@@ -577,6 +578,300 @@ async def google_callback(
                 <p><strong>Сообщение:</strong> {str(e)}</p>
                 <pre style="background: #f5f5f5; padding: 10px; overflow: auto;">{error_details}</pre>
                 <a href="{settings.FRONTEND_URL}">Вернуться на главную</a>
+            </body>
+            </html>
+        """, status_code=500)
+
+
+# ============================================================================
+# APPLE SIGN IN ENDPOINTS
+# ============================================================================
+
+@router.post("/apple/login", response_model=AppleAuthResponse)
+async def apple_login(
+    request: AppleAuthRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Authenticate user/shop via Apple Sign In
+    Supports two authentication methods:
+    1. Web OAuth flow: Send 'code' (authorization code)
+    2. Mobile flow: Send 'id_token' (Apple ID token)
+    
+    account_type: 'user' or 'shop'
+    platform: 'web' or 'mobile'
+    """
+    logger.info(f"[APPLE AUTH] Request received:")
+    logger.info(f"  - platform: {request.platform}")
+    logger.info(f"  - account_type: {request.account_type}")
+    logger.info(f"  - has code: {bool(request.code)}")
+    logger.info(f"  - has id_token: {bool(request.id_token)}")
+    
+    # Validate request
+    if not request.code and not request.id_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either 'code' or 'id_token' must be provided"
+        )
+    
+    if request.code and request.id_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide either 'code' or 'id_token', not both"
+        )
+    
+    # Get user info from Apple
+    user_info = None
+    
+    if request.code:
+        # Web flow: Exchange authorization code
+        user_info = await apple_auth.verify_authorization_code(request.code)
+    elif request.id_token:
+        # Mobile flow: Verify ID token
+        user_info = apple_auth.verify_id_token(request.id_token)
+    
+    if not user_info:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Apple authentication credentials"
+        )
+    
+    # Extract user data from first-time sign in (Apple only provides this once!)
+    if request.user_data:
+        first_name = request.user_data.get("name", {}).get("firstName", "")
+        last_name = request.user_data.get("name", {}).get("lastName", "")
+        full_name = f"{first_name} {last_name}".strip() or "Apple User"
+    else:
+        full_name = user_info.get("name") or "Apple User"
+    
+    if request.account_type == AccountType.USER:
+        # Check if user exists
+        user = await user_service.get_by_apple_id(db, user_info["apple_id"])
+        
+        if not user:
+            # Try to find by email if provided
+            if user_info.get("email"):
+                user = await user_service.get_by_email(db, user_info["email"])
+                if user:
+                    # Link Apple ID to existing account
+                    user.apple_id = user_info["apple_id"]
+                    await db.commit()
+                    await db.refresh(user)
+        
+        if not user:
+            # Create new user
+            user_data = UserCreate(
+                apple_id=user_info["apple_id"],
+                email=user_info.get("email") or f"{user_info['apple_id']}@privaterelay.appleid.com",
+                name=full_name,
+                avatar_url=None  # Apple doesn't provide avatar
+            )
+            user = await user_service.create(db, user_data)
+        
+        # Create tokens
+        token_data = {
+            "user_id": user.id,
+            "role": user.role.value,
+            "platform": request.platform.value,
+            "account_type": AccountType.USER.value
+        }
+        access_token = create_access_token(token_data)
+        refresh_token = create_refresh_token(token_data)
+        
+        return AppleAuthResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            user=UserResponse.model_validate(user).model_dump(),
+            account_type=AccountType.USER,
+            platform=request.platform
+        )
+    
+    elif request.account_type == AccountType.SHOP:
+        # Check if shop exists
+        shop = await shop_service.get_by_apple_id(db, user_info["apple_id"])
+        
+        if not shop:
+            # Try to find by email if provided
+            if user_info.get("email"):
+                shop = await shop_service.get_by_email(db, user_info["email"])
+                if shop:
+                    # Link Apple ID to existing account
+                    shop.apple_id = user_info["apple_id"]
+                    await db.commit()
+                    await db.refresh(shop)
+        
+        if not shop:
+            # Create new shop
+            shop_data = ShopCreate(
+                apple_id=user_info["apple_id"],
+                email=user_info.get("email") or f"{user_info['apple_id']}@privaterelay.appleid.com",
+                shop_name=f"{full_name}'s Shop",
+                owner_name=full_name,
+                avatar_url=None
+            )
+            shop = await shop_service.create(db, shop_data)
+            
+            # Send WebSocket event for new shop
+            from app.core.websocket import connection_manager
+            from app.schemas.webhook import create_shop_event, WebhookEventType
+            from app.schemas.shop import ShopListItem
+            
+            shop_dict = ShopListItem(
+                id=shop.id,
+                shop_name=shop.shop_name,
+                description=shop.description,
+                avatar_url=shop.avatar_url,
+                logo_url=shop.avatar_url,
+                products_count=0,
+                is_approved=shop.is_approved,
+                is_active=shop.is_active,
+                created_at=shop.created_at
+            ).model_dump(mode='json')
+            
+            shop_event = create_shop_event(
+                event_type=WebhookEventType.SHOP_CREATED,
+                shop_id=shop.id,
+                shop_name=shop.shop_name,
+                owner_name=shop.owner_name,
+                action="created",
+                is_approved=shop.is_approved,
+                is_active=shop.is_active,
+                shop=shop_dict
+            )
+            
+            await connection_manager.broadcast_to_type(shop_event.model_dump(mode='json'), "user")
+            logger.info(f"✅ Shop created via Apple Sign In: {shop.shop_name}")
+        
+        # Create tokens
+        token_data = {
+            "shop_id": shop.id,
+            "role": "shop",
+            "platform": request.platform.value,
+            "account_type": AccountType.SHOP.value
+        }
+        access_token = create_access_token(token_data)
+        refresh_token = create_refresh_token(token_data)
+        
+        return AppleAuthResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            shop=ShopResponse.model_validate(shop).model_dump(),
+            account_type=AccountType.SHOP,
+            platform=request.platform
+        )
+    
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid account_type. Must be 'user' or 'shop'"
+        )
+
+
+@router.get("/apple/url")
+async def get_apple_auth_url(
+    account_type: AccountType = AccountType.USER,
+    state: str = None
+):
+    """
+    Get Apple Sign In authorization URL
+    account_type: 'user' or 'shop'
+    """
+    import json
+    if not state:
+        state = json.dumps({"account_type": account_type.value})
+    
+    url = apple_auth.get_authorization_url(account_type.value, state)
+    return {"authorization_url": url, "account_type": account_type}
+
+
+@router.post("/apple/callback", response_class=HTMLResponse)
+async def apple_callback(
+    code: str = None,
+    state: str = None,
+    user: str = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Apple Sign In callback endpoint (POST)
+    Apple sends data via form_post method
+    """
+    import json as json_lib
+    
+    try:
+        logger.info(f"[APPLE CALLBACK] Received callback")
+        logger.info(f"  - code: {code[:20] if code else 'None'}...")
+        logger.info(f"  - state: {state}")
+        logger.info(f"  - user: {user}")
+        
+        if not code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No authorization code provided"
+            )
+        
+        # Parse state
+        state_data = {}
+        if state:
+            try:
+                state_data = json_lib.loads(state)
+            except:
+                pass
+        
+        account_type = state_data.get("account_type", "user")
+        
+        # Verify code and get user info
+        user_info = await apple_auth.verify_authorization_code(code)
+        
+        if not user_info:
+            return HTMLResponse(content=f"""
+                <html>
+                <body>
+                    <h1>Apple Sign In Error</h1>
+                    <p>Invalid authorization code</p>
+                    <a href="{settings.FRONTEND_URL}">Return to home</a>
+                </body>
+                </html>
+            """, status_code=401)
+        
+        # Parse user data if provided (first-time sign in only)
+        user_data = None
+        if user:
+            try:
+                user_data = json_lib.loads(user)
+                logger.info(f"[APPLE CALLBACK] User data received: {user_data}")
+            except:
+                pass
+        
+        # Continue with authentication flow similar to Google callback
+        # For now, redirect to frontend with code
+        from urllib.parse import urlencode
+        
+        params = {
+            "provider": "apple",
+            "code": code,
+            "account_type": account_type
+        }
+        
+        if user_data:
+            params["user_data"] = json_lib.dumps(user_data)
+        
+        redirect_url = f"{settings.FRONTEND_URL}/callback?{urlencode(params)}"
+        logger.info(f"[APPLE CALLBACK] Redirecting to: {redirect_url}")
+        
+        return RedirectResponse(url=redirect_url, status_code=302)
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        logger.error(f"Error in apple_callback: {error_details}")
+        
+        return HTMLResponse(content=f"""
+            <html>
+            <body style="font-family: monospace; padding: 20px;">
+                <h1>Apple Sign In Error</h1>
+                <p><strong>Message:</strong> {str(e)}</p>
+                <pre style="background: #f5f5f5; padding: 10px; overflow: auto;">{error_details}</pre>
+                <a href="{settings.FRONTEND_URL}">Return to home</a>
             </body>
             </html>
         """, status_code=500)

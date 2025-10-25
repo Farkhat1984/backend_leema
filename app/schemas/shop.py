@@ -53,7 +53,8 @@ class ShopBase(BaseModel):
 
 
 class ShopCreate(ShopBase):
-    google_id: str
+    google_id: Optional[str] = None
+    apple_id: Optional[str] = None
     description: Optional[str] = Field(None, max_length=1000)
     avatar_url: Optional[str] = None
     phone: Optional[str] = Field(None, max_length=50)

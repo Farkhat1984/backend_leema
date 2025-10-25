@@ -46,6 +46,24 @@ class GoogleAuthResponse(BaseModel):
     platform: ClientPlatform
 
 
+class AppleAuthRequest(BaseModel):
+    code: Optional[str] = Field(None, description="OAuth authorization code from Apple")
+    id_token: Optional[str] = Field(None, description="Apple ID token")
+    user_data: Optional[dict] = Field(None, description="User data from Apple (first sign in only)")
+    account_type: AccountType = Field(..., description="Account type: user or shop")
+    platform: ClientPlatform = Field(default=ClientPlatform.MOBILE, description="Client platform: web or mobile")
+
+
+class AppleAuthResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: Optional[dict] = None
+    shop: Optional[dict] = None
+    account_type: AccountType
+    platform: ClientPlatform
+
+
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
 

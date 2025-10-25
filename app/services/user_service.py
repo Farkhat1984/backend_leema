@@ -28,6 +28,12 @@ class UserService:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def get_by_apple_id(db: AsyncSession, apple_id: str) -> Optional[User]:
+        """Get user by Apple ID"""
+        result = await db.execute(select(User).where(User.apple_id == apple_id))
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def get_by_email(db: AsyncSession, email: str) -> Optional[User]:
         """Get user by email"""
         result = await db.execute(select(User).where(User.email == email))

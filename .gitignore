@@ -60,3 +60,4 @@ alembic/versions/*.py
 
 .env.backup
 .credentials.txt
+key.p8

@@ -1884,6 +1884,54 @@ async def get_wardrobe_stats(
     }
 
 
+@router.get("/wardrobes/{wardrobe_id}")
+async def get_wardrobe_item(
+    wardrobe_id: int,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get single wardrobe item by ID.
+    Admin-only endpoint.
+    
+    - **wardrobe_id**: ID of the wardrobe item
+    """
+    # Fetch item with user info
+    result = await db.execute(
+        select(UserWardrobeItem, User).join(
+            User, UserWardrobeItem.user_id == User.id
+        ).where(UserWardrobeItem.id == wardrobe_id)
+    )
+    row = result.first()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Wardrobe item not found")
+    
+    wardrobe_item, user = row
+    
+    # Format response
+    return {
+        "id": wardrobe_item.id,
+        "user_id": wardrobe_item.user_id,
+        "user_name": user.name,
+        "user_email": user.email,
+        "source": wardrobe_item.source.value,
+        "name": wardrobe_item.name,
+        "description": wardrobe_item.description,
+        "images": wardrobe_item.images,
+        "characteristics": wardrobe_item.characteristics,
+        "price": float(wardrobe_item.price) if wardrobe_item.price else None,
+        "category_id": wardrobe_item.category_id,
+        "shop_name": wardrobe_item.shop_name,
+        "is_favorite": wardrobe_item.is_favorite,
+        "folder": wardrobe_item.folder,
+        "original_product_id": wardrobe_item.original_product_id,
+        "generation_id": wardrobe_item.generation_id,
+        "created_at": wardrobe_item.created_at,
+        "updated_at": wardrobe_item.updated_at
+    }
+
+
 @router.get("/wardrobes/user/{user_id}")
 async def get_user_wardrobe(
     user_id: int,

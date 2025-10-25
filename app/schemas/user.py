@@ -16,7 +16,8 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    google_id: str
+    google_id: Optional[str] = None
+    apple_id: Optional[str] = None
     avatar_url: Optional[str] = None
 
 

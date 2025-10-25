@@ -26,6 +26,12 @@ class ShopService:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def get_by_apple_id(db: AsyncSession, apple_id: str) -> Optional[Shop]:
+        """Get shop by Apple ID"""
+        result = await db.execute(select(Shop).where(Shop.apple_id == apple_id))
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def get_by_email(db: AsyncSession, email: str) -> Optional[Shop]:
         """Get shop by email"""
         result = await db.execute(select(Shop).where(Shop.email == email))

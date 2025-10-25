@@ -37,11 +37,47 @@ class Settings(BaseSettings):
     FIREBASE_WEB_API: str = Field(..., description="Firebase Web API Key (REQUIRED)")
     GOOGLE_MOBILE_CLIENT_ID: str = Field(..., description="Google Mobile Client ID (REQUIRED)")
     GOOGLE_MOBILE_CLIENT_SECRET: str = ""  # Optional for mobile OAuth flow
+    GOOGLE_IOS_CLIENT_ID: str = ""  # Optional - iOS-specific client ID
     GOOGLE_ANDROID_CLIENT_ID: str = ""  # Optional - Android-specific client ID
 
     # Google Gemini AI - REQUIRED from environment
     GEMINI_API_KEY: str = Field(..., description="Google Gemini API Key (REQUIRED)")
     GEMINI_MODEL: str = "gemini-2.0-flash-exp"  # Latest model 2025
+
+    # Apple Sign In - Optional (for mobile apps)
+    APPLE_TEAM_ID: str = Field(default="", description="Apple Developer Team ID (Optional)")
+    APPLE_CLIENT_ID: str = Field(default="", description="Apple Service ID (Optional)")
+    APPLE_KEY_ID: str = Field(default="", description="Apple Sign In Key ID (Optional)")
+    APPLE_PRIVATE_KEY: str = Field(default="", description="Apple Sign In Private Key (.p8 file path or content) (Optional)")
+    APPLE_REDIRECT_URI: str = "https://api.leema.kz/api/v1/auth/apple/callback"
+    
+    @field_validator("APPLE_PRIVATE_KEY", mode="before")
+    @classmethod
+    def load_apple_private_key(cls, v):
+        """Load Apple private key from file if path is provided"""
+        if not v:
+            return v
+        
+        # If it looks like PEM content, return as-is
+        if "BEGIN PRIVATE KEY" in v:
+            return v
+        
+        # If it's a file path, read the content
+        if v.endswith('.p8'):
+            import os
+            # Check if file exists
+            if not os.path.exists(v):
+                # If file doesn't exist, maybe it's in Docker - return empty to make it optional
+                return ""
+            try:
+                with open(v, 'r') as f:
+                    return f.read()
+            except Exception as e:
+                # Make it optional - return empty string if file can't be read
+                return ""
+        
+        # Otherwise, assume it's the key content itself
+        return v
 
     # PayPal - REQUIRED from environment
     PAYPAL_MODE: str = "sandbox"  # sandbox or live
